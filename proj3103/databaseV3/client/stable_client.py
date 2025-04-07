@@ -86,60 +86,32 @@ class StableSocketClient:
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
 
-    def connect(self):
-        """Establish connection to server"""
+    def connect(self, host, port, env_name=None, env_password=None, account_info=None):
+        self.disconnect()
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.settimeout(5)
+
         try:
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
-
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10)
-            self.socket.connect((self.host, self.port))
-
-            # Handle authentication
-            if self.auth_data:
-                auth_message = json.dumps(self.auth_data) + '\n'
-                self.socket.sendall(auth_message.encode('utf-8'))
-
-                # Wait for response
-                self.socket.settimeout(5)
-                try:
-                    response = self.socket.recv(1024).decode('utf-8')
-                    if response:
-                        try:
-                            response_data = json.loads(response)
-                            if response_data.get('status') != 'authenticated':
-                                self.log(f"Authentication failed: {response_data.get('message', 'Unknown error')}")
-                                self.socket.close()
-                                return False
-                            else:
-                                self.log(f"Authentication successful")
-                        except json.JSONDecodeError:
-                            self.log(f"Warning: Could not parse auth response: {response[:50]}...")
-                    else:
-                        self.log("No authentication response received")
-                except socket.timeout:
-                    self.log("Authentication response timeout")
-                    self.socket.close()
-                    return False
-
-            # Set to non-blocking for normal operation
-            self.socket.setblocking(False)
+            self.sock.connect((host, port))
+            self.running = True
             self.connected = True
-            self.log(f"Connected to server {self.host}:{self.port}")
-            return True
+            print(f"Connected to server {host}:{port}")
 
+            # ✅ Send authentication message immediately after connecting
+            auth_payload = {
+                "type": "auth",
+                "env_name": env_name or "default",
+                "env_password": env_password or "default_password",
+                "account_info": account_info or "anonymous"
+            }
+            self.sock.sendall(json.dumps(auth_payload).encode('utf-8'))
+
+            self.listener_thread = threading.Thread(target=self.listen_to_server, daemon=True)
+            self.listener_thread.start()
+            return True
         except Exception as e:
-            self.log(f"Connection error: {e}")
-            if self.socket:
-                try:
-                    self.socket.close()
-                except:
-                    pass
-            self.connected = False
+            print(f"Connection failed: {e}")
+            self.disconnect()
             return False
 
     def start(self):
@@ -204,14 +176,59 @@ class StableSocketClient:
 
         while self.running:
             try:
+                if not self.send_queue.empty():
+                    if not self.send_queue.empty():
+                        data = self.send_queue.get()
+
+                        if data is None:
+                            self.log("Warning: Got None from send_queue")
+                            continue
+
+                        # Try to parse JSON if it's a string
+                        if isinstance(data, str):
+                            try:
+                                data = json.loads(data)
+                            except json.JSONDecodeError:
+                                self.log(f"Invalid JSON in queue: {data}")
+                                continue
+
+                        if not isinstance(data, dict):
+                            self.log(f"Unexpected data type in queue (not dict): {type(data)} - {data}")
+                            continue
+
+                        msg_type = data.get("type")
+                        if msg_type == "packet":
+                            self.send_packet(data.get("packet"))
+                        elif msg_type == "auth":
+                            self.send_auth(data)
+                        else:
+                            self.log(f"Unknown message type: {msg_type}")
+
+                        # Sleep to avoid busy waiting
+                time.sleep(0.01)
+            except Exception as e:
+                print(f"Error in send loop: {e}")
+            try:
+                # Check connection status
                 # Check connection status
                 if not self.connected:
-                    # Don't spam reconnection attempts
                     current_time = time.time()
                     if current_time - reconnect_time >= self.reconnect_delay:
                         reconnect_time = current_time
                         self.log(f"Not connected. Attempting to connect to {self.host}:{self.port}")
-                        self.connect()
+
+                        if not self.auth_data:
+                            self.log("auth_data is None — skipping connect()")
+                            time.sleep(0.5)
+                            continue
+
+                        self.connect(
+                            self.host,
+                            self.port,
+                            self.auth_data.get('env_name'),
+                            self.auth_data.get('env_password'),
+                            self.auth_data.get('account_info')
+                        )
                     time.sleep(0.5)
                     continue
 
@@ -220,7 +237,13 @@ class StableSocketClient:
                     data = self.send_queue.get(timeout=0.5)
                 except queue.Empty:
                     continue
-
+                if data is None:
+                    continue
+                if not isinstance(data, str):
+                    self.log(f"Expected string in send queue, got {type(data)}: {data}")
+                    continue
+                if not data.endswith('\n'):
+                    data += '\n'
                 # Send the packet
                 try:
                     if self.socket:
@@ -521,4 +544,3 @@ def upgrade_to_real_capture(backend):
         backend.log("Scapy not available. Using dummy packets for testing.")
         # Continue with test packets if Scapy isn't available
 
-# Example usage in your main.py:

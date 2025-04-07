@@ -1,7 +1,5 @@
 import tkinter as tk
 from tkinter import ttk
-import threading
-import time
 
 
 class PacketMonitorUI:
@@ -57,7 +55,7 @@ class PacketMonitorUI:
         client_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # Create a treeview to display client information
-        columns = ("ip", "port", "packets", "environment", "status")
+        columns = ("ip", "port", "packets", "environment", "account", "status")
         client_tree = ttk.Treeview(client_frame, columns=columns, show="headings")
 
         # Define column headings
@@ -65,6 +63,7 @@ class PacketMonitorUI:
         client_tree.heading("port", text="Port")
         client_tree.heading("packets", text="Packet Count")
         client_tree.heading("environment", text="Environment")
+        client_tree.heading("account", text="Account")  # Add account column
         client_tree.heading("status", text="Status")
 
         # Define column widths
@@ -72,6 +71,7 @@ class PacketMonitorUI:
         client_tree.column("port", width=100)
         client_tree.column("packets", width=100)
         client_tree.column("environment", width=100)
+        client_tree.column("account", width=150)  # Set width for account column
         client_tree.column("status", width=100)
 
         # Add a scrollbar
@@ -126,6 +126,67 @@ class PacketMonitorUI:
                 'client_tree': client_tree,
                 'protocol_tree': protocol_tree
             }
+
+    def update_client_display(self):
+        """Update the client display with current information"""
+        try:
+            # Get a copy of the current clients data
+            clients_copy = self.server.get_clients_data()
+
+            # Get all current items in the treeview
+            current_items = set(self.client_tree.get_children())
+
+            # Update existing clients and add new ones
+            for client_addr, client_info in clients_copy.items():
+                client_id = f"{client_addr[0]}:{client_addr[1]}"
+
+                # Check if this client is already in the treeview
+                item_exists = False
+                for item_id in current_items:
+                    if self.client_tree.item(item_id, "values")[0] == client_addr[0] and \
+                            self.client_tree.item(item_id, "values")[1] == str(client_addr[1]):
+                        # Update existing item
+                        self.client_tree.item(
+                            item_id,
+                            values=(
+                                client_addr[0],
+                                client_addr[1],
+                                client_info['packet_count'],
+                                client_info.get('environment', 'default'),
+                                client_info.get('account_info', 'Unknown'),  # Display account info
+                                "Connected" if client_info['connected'] else "Disconnected"
+                            )
+                        )
+                        current_items.remove(item_id)
+                        item_exists = True
+                        break
+
+                # Add new item if it doesn't exist
+                if not item_exists:
+                    self.client_tree.insert(
+                        "",
+                        tk.END,
+                        values=(
+                            client_addr[0],
+                            client_addr[1],
+                            client_info['packet_count'],
+                            client_info.get('environment', 'default'),
+                            client_info.get('account_info', 'Unknown'),  # Display account info
+                            "Connected" if client_info['connected'] else "Disconnected"
+                        )
+                    )
+
+            # Remove items that no longer exist in the clients dictionary
+            for item_id in current_items:
+                self.client_tree.delete(item_id)
+
+            # Update status bar with total count
+            total_clients = len([c for c in clients_copy.values() if c['connected']])
+            total_packets = sum(c['packet_count'] for c in clients_copy.values())
+            self.status_var.set(f"Active clients: {total_clients} | Total packets: {total_packets}")
+
+        except Exception as e:
+            print(f"Error updating client display: {e}")
 
     def schedule_update(self):
         """Schedule an update on the main thread"""

@@ -5,13 +5,23 @@ import os
 # Add the current directory to the path to ensure modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Import the UI
 from client_front import PacketCaptureClientUI
-from client_back import PacketCaptureBackend, ScapyPacketCaptureBackend
+
+# Import only from stable_client.py for the stable backend
+from stable_client import StablePacketCaptureBackend, upgrade_to_real_capture, SimplePacketHandler
+
+# Define this class here or import properly if it exists elsewhere
+class ScapyPacketCaptureBackend:
+    def __init__(self, ui=None):
+        self.ui = ui
+        # Add necessary implementation or pass if this is just a placeholder
 
 
 def main():
     # Choose which backend implementation to use
-    use_scapy = False  # Set to True to use Scapy instead of PyShark
+    use_stable = True  # Set to True to use the new stable backend
+    use_scapy = False  # Only used if use_stable is False
 
     # Create the root window
     root = tk.Tk()
@@ -20,13 +30,23 @@ def main():
     ui = PacketCaptureClientUI(root)
 
     # Create the backend
-    if use_scapy:
-        backend = ScapyPacketCaptureBackend(ui)
-    else:
-        backend = PacketCaptureBackend(ui)
+    if use_stable:
+        backend = StablePacketCaptureBackend(ui)
+        # Connect UI and backend
+        ui.set_backend(backend)
 
-    # Connect UI and backend
-    ui.set_backend(backend)
+        # Optional: Set a timer to upgrade to real packet capture after connection stability is confirmed
+        # This will switch from test packets to real packet capture after 10 seconds
+        root.after(10000, lambda: upgrade_to_real_capture(backend))
+    else:
+        # Use the original backends - these need proper implementations
+        if use_scapy:
+            backend = ScapyPacketCaptureBackend(ui)
+        else:
+            # This should be replaced with your actual backup implementation
+            backend = StablePacketCaptureBackend(ui)  # Fallback to stable anyway
+        # Connect UI and backend
+        ui.set_backend(backend)
 
     # Start the main loop
     root.mainloop()

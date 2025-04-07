@@ -211,6 +211,7 @@ class PacketServer:
                 if auth_json.get('type') == 'auth':
                     client_env_name = auth_json.get('env_name')
                     env_password = auth_json.get('env_password')
+                    account_info = auth_json.get('account_info')  # Get account information
                     print(f"Client {addr} authenticated for environment: {client_env_name}")
 
                     if self.verify_environment(client_env_name, env_password):
@@ -229,6 +230,24 @@ class PacketServer:
                                     'packet_count': 0
                                 }
 
+                        # Register the new client with environment and account info
+                        with self.clients_lock:
+                            self.clients[addr] = {
+                                'packet_count': 0,
+                                'connected': True,
+                                'environment': env_name,
+                                'account_info': account_info  # Store account information
+                            }
+
+                        # Also register in the environment tracking
+                        with self.environment_lock:
+                            if env_name in self.environments:
+                                self.environments[env_name]['clients'][addr] = {
+                                    'packet_count': 0,
+                                    'connected': True,
+                                    'account_info': account_info  # Store account information
+                                }
+
                         # Send success response
                         conn.sendall(json.dumps({
                             'status': 'authenticated',
@@ -245,22 +264,6 @@ class PacketServer:
                 # Backward compatibility - assume it's a packet
                 buffer = auth_data
                 authenticated = True
-
-            # Register the new client with environment
-            with self.clients_lock:
-                self.clients[addr] = {
-                    'packet_count': 0,
-                    'connected': True,
-                    'environment': env_name
-                }
-
-            # Also register in the environment tracking
-            with self.environment_lock:
-                if env_name in self.environments:
-                    self.environments[env_name]['clients'][addr] = {
-                        'packet_count': 0,
-                        'connected': True
-                    }
 
             # Notify UI of new client
             if self.ui_update_callback:
