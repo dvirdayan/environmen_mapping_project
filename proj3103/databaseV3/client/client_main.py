@@ -7,9 +7,9 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import the UI
 from client_front import PacketCaptureClientUI
-
 # Import only from stable_client.py for the stable backend
 from stable_client import StablePacketCaptureBackend, upgrade_to_real_capture, SimplePacketHandler
+
 
 # Define this class here or import properly if it exists elsewhere
 class ScapyPacketCaptureBackend:
@@ -31,7 +31,12 @@ def main():
 
     # Create the backend
     if use_stable:
-        backend = StablePacketCaptureBackend(ui)
+        backend = StablePacketCaptureBackend()
+        backend.configure(capture_interface="Ethernet",
+                          server_host="localhost",
+                          server_port=65432,
+                          env_name="test",  # Must match a valid environment on server
+                          env_password="test_password")  # Must be correct password
         # Connect UI and backend
         ui.set_backend(backend)
 

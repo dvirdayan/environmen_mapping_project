@@ -2,6 +2,7 @@ import socket
 import threading
 import json
 import time
+import select  # Added missing import
 from datetime import datetime
 
 
@@ -10,6 +11,8 @@ class PacketServer:
         self.host = host
         self.port = port
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,
+                                      1)  # Added to prevent "address already in use"
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen()
         print(f"Server listening on {self.host}:{self.port}")
@@ -143,15 +146,20 @@ class PacketServer:
             if self.ui_update_callback:
                 self.ui_update_callback()
 
+            return True
         except json.JSONDecodeError as e:
             print(f"Error decoding JSON: {e}")
             print(f"Received data: {packet_data}")
         except Exception as e:
             print(f"Error processing packet: {e}")
 
+        return False
+
     # Add method to verify environment credentials
     def verify_environment(self, env_name, env_password):
         """Verify environment credentials"""
+        print(f"Current credentials: {self.env_credentials}")
+        print(f"Verifying environment: {env_name} with password: {env_password}")
         if not env_name:
             return True  # Allow legacy clients without environment
 
@@ -203,146 +211,187 @@ class PacketServer:
         authenticated = False
         buffer = ""
 
-        # Wait for authentication message
-        auth_data = conn.recv(4096).decode('utf-8')
-        if auth_data:
-            try:
-                auth_json = json.loads(auth_data)
-                if auth_json.get('type') == 'auth':
-                    client_env_name = auth_json.get('env_name')
-                    env_password = auth_json.get('env_password')
-                    account_info = auth_json.get('account_info')  # Get account information
-                    print(f"Client {addr} authenticated for environment: {client_env_name}")
-
-                    if self.verify_environment(client_env_name, env_password):
-                        env_name = client_env_name if client_env_name else "default"
-                        authenticated = True
-
-                        # Initialize environment if it doesn't exist
-                        with self.environment_lock:
-                            if env_name not in self.environments:
-                                self.environments[env_name] = {
-                                    'clients': {},
-                                    'protocol_counts': {
-                                        'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                        'FTP': 0, 'SMTP': 0, 'Other': 0
-                                    },
-                                    'packet_count': 0
-                                }
-
-                        # Register the new client with environment and account info
-                        with self.clients_lock:
-                            self.clients[addr] = {
-                                'packet_count': 0,
-                                'connected': True,
-                                'environment': env_name,
-                                'account_info': account_info  # Store account information
-                            }
-
-                        # Also register in the environment tracking
-                        with self.environment_lock:
-                            if env_name in self.environments:
-                                self.environments[env_name]['clients'][addr] = {
-                                    'packet_count': 0,
-                                    'connected': True,
-                                    'account_info': account_info  # Store account information
-                                }
-
-                        # Send success response
-                        conn.sendall(json.dumps({
-                            'status': 'authenticated',
-                            'message': f'Connected to environment: {env_name}'
-                        }).encode('utf-8'))
-                    else:
-                        # Send failure response
-                        conn.sendall(json.dumps({
-                            'status': 'error',
-                            'message': 'Invalid environment credentials'
-                        }).encode('utf-8'))
-                        return
-            except json.JSONDecodeError:
-                # Backward compatibility - assume it's a packet
-                buffer = auth_data
-                authenticated = True
-
-            # Notify UI of new client
-            if self.ui_update_callback:
-                self.ui_update_callback()
-
-        buffer = ""
         try:
-            while self.running:
-                data = conn.recv(8192).decode('utf-8', errors='ignore')
-                if not data:
-                    break
+            # Make socket non-blocking for timeout handling
+            conn.settimeout(10)
 
-                buffer += data
+            # Wait for authentication message
+            auth_data = conn.recv(4096).decode('utf-8')
+            print(f"Received auth data from {addr}: {auth_data[:100]}...")  # Debug logging
 
-                # Try to find complete JSON objects
-                while buffer:
-                    try:
-                        # Try to parse the buffer as JSON
-                        json.loads(buffer)
-                        self.print_packet_info(buffer, addr)
-                        buffer = ""  # Clear buffer after successful parsing
+            if auth_data:
+                try:
+                    auth_lines = auth_data.strip().split('\n')
+                    print(f"Auth lines count: {len(auth_lines)}")  # Debug logging
 
-                        # Send acknowledgment back to client with packet count
+                    for i, line in enumerate(auth_lines):
+                        if not line.strip():
+                            continue
                         try:
-                            # Increment packet count
-                            with self.clients_lock:
-                                self.clients[addr]['packet_count'] += 1
-                                current_count = self.clients[addr]['packet_count']
+                            auth_json = json.loads(line)
+                            print(f"Auth JSON: {auth_json}")  # Debug logging
 
-                            # Send packet count with acknowledgment
-                            ack_with_count = f"Packet received|{current_count}\n"
-                            conn.sendall(ack_with_count.encode('utf-8'))
-                        except socket.error:
-                            print("Error sending acknowledgment")
-                            return
-                        break
-                    except json.JSONDecodeError as e:
-                        if "Extra data" in str(e):
-                            # Find the position of the first complete JSON object
-                            pos = str(e).find('Extra data')
-                            if pos != -1:
-                                try:
-                                    valid_json = buffer[:pos]
-                                    self.print_packet_info(valid_json, addr)
-                                    buffer = buffer[pos:]
+                            if auth_json.get('type') == 'auth':
+                                client_env_name = auth_json.get('env_name')
+                                env_password = auth_json.get('env_password')
+                                account_info = auth_json.get('account_info', {})
 
-                                    # Increment packet count and send count to client
+                                print(f"Client {addr} attempting authentication for environment: {client_env_name}")
+
+                                if self.verify_environment(client_env_name, env_password):
+                                    env_name = client_env_name if client_env_name else "default"
+                                    authenticated = True
+
+                                    # Initialize environment if needed
+                                    with self.environment_lock:
+                                        if env_name not in self.environments:
+                                            self.environments[env_name] = {
+                                                'clients': {},
+                                                'protocol_counts': {
+                                                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                    'FTP': 0, 'SMTP': 0, 'Other': 0
+                                                },
+                                                'packet_count': 0
+                                            }
+
+                                    # Register the client
                                     with self.clients_lock:
-                                        self.clients[addr]['packet_count'] += 1
-                                        current_count = self.clients[addr]['packet_count']
+                                        self.clients[addr] = {
+                                            'packet_count': 0,
+                                            'connected': True,
+                                            'environment': env_name,
+                                            'account_info': account_info
+                                        }
 
-                                    # Send packet count with acknowledgment
-                                    ack_with_count = f"Packet received|{current_count}\n"
-                                    conn.sendall(ack_with_count.encode('utf-8'))
-                                except Exception as e:
-                                    print(f"Error processing partial JSON: {e}")
-                                    buffer = ""
-                        else:
-                            # If we can't parse the JSON yet, wait for more data
+                                    with self.environment_lock:
+                                        self.environments[env_name]['clients'][addr] = {
+                                            'packet_count': 0,
+                                            'connected': True,
+                                            'account_info': account_info
+                                        }
+
+                                    # Send auth success response
+                                    response = {
+                                        'status': 'authenticated',
+                                        'message': f'Connected to environment: {env_name}'
+                                    }
+                                    print(f"Sending auth success: {response}")  # Debug logging
+                                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+
+                                    # Capture any additional data (like packet lines)
+                                    remaining_lines = auth_lines[i + 1:]
+                                    buffer = '\n'.join(remaining_lines)
+                                    print(f"Remaining buffer after auth: {buffer[:100]}...")  # Debug logging
+                                else:
+                                    # Invalid credentials
+                                    response = {
+                                        'status': 'error',
+                                        'message': 'Invalid environment credentials'
+                                    }
+                                    print(f"Sending auth failure: {response}")  # Debug logging
+                                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+                                    return
+                                break  # stop after handling one valid auth
+                        except json.JSONDecodeError as e:
+                            print(f"Error parsing JSON line: {line} - {e}")
+
+                    if self.ui_update_callback:
+                        self.ui_update_callback()
+
+                except Exception as e:
+                    print(f"Error during initial authentication parsing: {e}")
+                    return
+
+            # Make socket non-blocking for the packet processing loop
+            conn.setblocking(False)
+
+            # Process remaining data in buffer
+            if buffer and authenticated:
+                for line in buffer.strip().split('\n'):
+                    if line.strip():
+                        success = self.print_packet_info(line, addr)
+                        if success:
+                            with self.clients_lock:
+                                if addr in self.clients:
+                                    self.clients[addr]['packet_count'] += 1
+                                    # Send acknowledgment back to client
+                                    try:
+                                        ack_message = json.dumps({
+                                            'type': 'ack',
+                                            'count': self.clients[addr]['packet_count']
+                                        }) + '\n'
+                                        conn.sendall(ack_message.encode('utf-8'))
+                                    except Exception as e:
+                                        print(f"Error sending ACK: {e}")
+
+            # Enter main processing loop for this client
+            while self.running and authenticated:
+                try:
+                    # Use select to check for data with a timeout
+                    readable, _, _ = select.select([conn], [], [], 0.5)
+
+                    if conn in readable:
+                        data = conn.recv(4096).decode('utf-8')
+                        if not data:  # Connection closed
+                            print(f"Client {addr} disconnected")
                             break
 
-        except socket.error as e:
-            print(f"Socket error with client {addr}: {e}")
-        except Exception as e:
-            print(f"Error handling client {addr}: {e}")
-        finally:
-            conn.close()
-            print(f"Connection from {addr} closed")
+                        # Process packets
+                        buffer += data
+                        print(f"Received data from {addr}, buffer now: {len(buffer)} bytes")  # Debug logging
 
-            # Mark client as disconnected
+                        # Process complete lines (packets)
+                        while '\n' in buffer:
+                            line, buffer = buffer.split('\n', 1)
+                            if line.strip():
+                                success = self.print_packet_info(line, addr)
+                                if success:
+                                    with self.clients_lock:
+                                        if addr in self.clients:
+                                            self.clients[addr]['packet_count'] += 1
+                                            # Send acknowledgment back to client
+                                            try:
+                                                ack_message = json.dumps({
+                                                    'type': 'ack',
+                                                    'count': self.clients[addr]['packet_count']
+                                                }) + '\n'
+                                                conn.sendall(ack_message.encode('utf-8'))
+                                            except Exception as e:
+                                                print(f"Error sending ACK: {e}")
+
+                except (ConnectionResetError, BrokenPipeError) as e:
+                    print(f"Connection with {addr} was reset: {e}")
+                    break
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    print(f"Error processing data from {addr}: {e}")
+                    break
+
+        except Exception as e:
+            print(f"Client handler error for {addr}: {e}")
+        finally:
+            # Update client status
             with self.clients_lock:
                 if addr in self.clients:
                     self.clients[addr]['connected'] = False
 
-            # Notify UI of client disconnect
+            with self.environment_lock:
+                if env_name in self.environments and addr in self.environments[env_name]['clients']:
+                    self.environments[env_name]['clients'][addr]['connected'] = False
+
+            # Notify UI if registered
             if self.ui_update_callback:
                 self.ui_update_callback()
 
-    def load_environments_from_db(self, db_file="credentials.db"):
+            # Close the connection
+            try:
+                conn.close()
+            except:
+                pass
+            print(f"Connection with {addr} closed")
+
+    def load_environments_from_db(self, db_file="../databaseV3/credentials.db"):
         """Load environments from the credential database"""
         try:
             import sqlite3
@@ -361,11 +410,15 @@ class PacketServer:
 
             conn.close()
             print(f"Loaded {len(self.env_credentials)} environments from database")
+            print(f"Environment credentials: {self.env_credentials}")
         except Exception as e:
             print(f"Error loading environments from database: {e}")
             print("Using default environment only")
 
     def start(self):
+        # Set socket to non-blocking mode with a timeout
+        self.server_socket.settimeout(1.0)
+
         accept_thread = threading.Thread(target=self._accept_connections)
         accept_thread.daemon = True
         accept_thread.start()
@@ -381,6 +434,9 @@ class PacketServer:
                     client_thread.start()
                 except socket.timeout:
                     continue
+                except Exception as e:
+                    print(f"Error accepting connection: {e}")
+                    time.sleep(0.1)  # Brief pause to avoid CPU hogging on repeated errors
         except Exception as e:
             if self.running:  # Only log error if not intentionally shutting down
                 print(f"Error accepting connections: {e}")
@@ -395,11 +451,13 @@ class PacketServer:
 
 
 if __name__ == "__main__":
-    # If this file is run directly, import and start the UI
     from packet_server_ui import start_ui
 
     server = PacketServer()
-    server.start()
 
-    # Start the UI with a reference to the server
+    server.load_environments_from_db()  # First load DB
+
+    print("Added test environment with credentials: C1/CCC")
+
+    server.start()
     start_ui(server)
