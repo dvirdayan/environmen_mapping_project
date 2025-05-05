@@ -51,6 +51,60 @@ class PacketServer:
         # UI callbacks
         self.ui_update_callback = None
 
+        # Create stats sender thread
+        self.stats_thread = threading.Thread(target=self._send_stats_periodically)
+        self.stats_thread.daemon = True
+
+    def _send_stats_periodically(self):
+        """Send protocol statistics to all connected clients periodically"""
+        while self.running:
+            time.sleep(5)  # Send stats every 5 seconds
+
+            # Get a list of connected clients
+            connected_clients = {}
+            with self.clients_lock:
+                for addr, client_info in self.clients.items():
+                    if client_info.get('connected', False):
+                        connected_clients[addr] = client_info
+
+            if not connected_clients:
+                continue
+
+            # Send stats to each connected client
+            for addr, client_info in connected_clients.items():
+                try:
+                    # Get environment for this client
+                    env_name = client_info.get('environment', 'default')
+
+                    # Get protocol counts for this environment
+                    env_protocol_counts = {}
+                    with self.environment_lock:
+                        if env_name in self.environments:
+                            env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+                        else:
+                            env_protocol_counts = self.protocol_counts.copy()
+
+                    # Create stats message
+                    stats_message = {
+                        'type': 'stats',
+                        'protocol_counts': env_protocol_counts,
+                        'timestamp': datetime.now().isoformat()
+                    }
+
+                    # Get client socket from addr
+                    socket_conn = client_info.get('socket')
+                    if socket_conn:
+                        try:
+                            socket_conn.sendall((json.dumps(stats_message) + '\n').encode('utf-8'))
+                        except Exception as e:
+                            print(f"Error sending stats to {addr}: {e}")
+                            # Mark client as disconnected if we can't send to it
+                            with self.clients_lock:
+                                if addr in self.clients:
+                                    self.clients[addr]['connected'] = False
+                except Exception as e:
+                    print(f"Error preparing stats for {addr}: {e}")
+
     def register_ui_callback(self, callback):
         """Register a callback function that will be called when data changes"""
         self.ui_update_callback = callback
@@ -260,7 +314,8 @@ class PacketServer:
                                             'packet_count': 0,
                                             'connected': True,
                                             'environment': env_name,
-                                            'account_info': account_info
+                                            'account_info': account_info,
+                                            'socket': conn  # Store socket for stats sending
                                         }
 
                                     with self.environment_lock:
@@ -316,9 +371,18 @@ class PacketServer:
                                     self.clients[addr]['packet_count'] += 1
                                     # Send acknowledgment back to client
                                     try:
+                                        # Get protocol counts for this environment
+                                        env_protocol_counts = {}
+                                        with self.environment_lock:
+                                            if env_name in self.environments:
+                                                env_protocol_counts = self.environments[env_name][
+                                                    'protocol_counts'].copy()
+
+                                        # Enhanced ACK with protocol counts
                                         ack_message = json.dumps({
                                             'type': 'ack',
-                                            'count': self.clients[addr]['packet_count']
+                                            'count': self.clients[addr]['packet_count'],
+                                            'protocol_counts': env_protocol_counts
                                         }) + '\n'
                                         conn.sendall(ack_message.encode('utf-8'))
                                     except Exception as e:
@@ -349,11 +413,21 @@ class PacketServer:
                                     with self.clients_lock:
                                         if addr in self.clients:
                                             self.clients[addr]['packet_count'] += 1
-                                            # Send acknowledgment back to client
+
+                                            # Send acknowledgment with protocol counts back to client
                                             try:
+                                                # Get protocol counts for this environment
+                                                env_protocol_counts = {}
+                                                with self.environment_lock:
+                                                    if env_name in self.environments:
+                                                        env_protocol_counts = self.environments[env_name][
+                                                            'protocol_counts'].copy()
+
+                                                # Enhanced ACK with protocol counts
                                                 ack_message = json.dumps({
                                                     'type': 'ack',
-                                                    'count': self.clients[addr]['packet_count']
+                                                    'count': self.clients[addr]['packet_count'],
+                                                    'protocol_counts': env_protocol_counts
                                                 }) + '\n'
                                                 conn.sendall(ack_message.encode('utf-8'))
                                             except Exception as e:
@@ -375,6 +449,7 @@ class PacketServer:
             with self.clients_lock:
                 if addr in self.clients:
                     self.clients[addr]['connected'] = False
+                    self.clients[addr]['socket'] = None  # Remove socket reference
 
             with self.environment_lock:
                 if env_name in self.environments and addr in self.environments[env_name]['clients']:
@@ -418,6 +493,9 @@ class PacketServer:
     def start(self):
         # Set socket to non-blocking mode with a timeout
         self.server_socket.settimeout(1.0)
+
+        # Start the stats sender thread
+        self.stats_thread.start()
 
         accept_thread = threading.Thread(target=self._accept_connections)
         accept_thread.daemon = True

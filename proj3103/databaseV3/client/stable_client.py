@@ -109,6 +109,19 @@ class StableSocketClient:
         self.lock = threading.Lock()  # Add a lock for thread safety
         self.send_queue = queue.Queue()
 
+        # Add protocol counts dict that will be updated from server
+        self.protocol_counts = {
+            'TCP': 0,
+            'UDP': 0,
+            'HTTP': 0,
+            'HTTPS': 0,
+            'FTP': 0,
+            'SMTP': 0,
+            'Other': 0
+        }
+        # Add callback for protocol updates
+        self.protocol_update_callback = None
+
     def start(self):
         """Start the client."""
         if self.running:  # Check if already running
@@ -139,6 +152,10 @@ class StableSocketClient:
             }
         else:
             self.auth_data = None
+
+    def set_protocol_update_callback(self, callback):
+        """Set callback function to be called when protocol counts are updated"""
+        self.protocol_update_callback = callback
 
     def log(self, message):
         if self.logger:
@@ -537,6 +554,26 @@ class StableSocketClient:
                                         if msg_type == 'ack':
                                             self.last_ack_time = time.time()
                                             self.packet_count += 1
+
+                                            # Get protocol counts from the server if available
+                                            if 'protocol_counts' in response:
+                                                # Update our local protocol counts
+                                                self.protocol_counts = response['protocol_counts']
+
+                                                # Call the callback if registered
+                                                if self.protocol_update_callback:
+                                                    self.protocol_update_callback(self.protocol_counts)
+
+                                        elif msg_type == 'stats':
+                                            # Update protocol counts from stats message
+                                            if 'protocol_counts' in response:
+                                                self.protocol_counts = response['protocol_counts']
+
+                                                # Call the callback if registered
+                                                if self.protocol_update_callback:
+                                                    self.protocol_update_callback(self.protocol_counts)
+
+                                            self.log(f"Updated protocol counts from server")
                                     except json.JSONDecodeError:
                                         self.log(f"Invalid JSON: {line[:30]}...")
                         except UnicodeDecodeError:
@@ -550,9 +587,15 @@ class StableSocketClient:
                 traceback.print_exc()
                 time.sleep(1)
 
+    def get_protocol_counts(self):
+        """Return the current protocol counts received from server"""
+        return self.protocol_counts.copy()
+
 
 class StablePacketCaptureBackend:
     def __init__(self, ui=None):
+        # Existing initialization code...
+
         # UI reference for callbacks
         self.ui = ui
 
@@ -581,6 +624,17 @@ class StablePacketCaptureBackend:
         # Queue for UI updates
         self.ui_queue = queue.Queue()
         self.ui_update_thread = None
+
+        # Protocol counts from server
+        self.protocol_counts = {
+            'TCP': 0,
+            'UDP': 0,
+            'HTTP': 0,
+            'HTTPS': 0,
+            'FTP': 0,
+            'SMTP': 0,
+            'Other': 0
+        }
 
     def log(self, message):
         """Log a message through the UI"""
@@ -620,6 +674,9 @@ class StablePacketCaptureBackend:
         self.client = StableSocketClient(self.server_host, self.server_port, self.log)
         self.client.set_auth(self.env_name, self.env_password)
 
+        # Register protocol update callback
+        self.client.set_protocol_update_callback(self.update_protocol_counts)
+
         # Create packet handler
         self.packet_handler = SimplePacketHandler(self.capture_interface, self.process_packet)
 
@@ -649,6 +706,14 @@ class StablePacketCaptureBackend:
         if self.client:
             self.client.stop()
             self.client = None
+
+    def update_protocol_counts(self, protocol_counts):
+        """Update protocol counts received from server"""
+        self.protocol_counts = protocol_counts
+
+        # Update UI with protocol counts
+        if self.ui:
+            self.ui_queue.put(("protocol_counts", protocol_counts))
 
     def process_packet(self, packet_dict):
         """Process a packet from the handler and send it to the server"""
@@ -705,6 +770,16 @@ class StablePacketCaptureBackend:
                     except Exception as e:
                         print(f"Error updating connection status: {str(e)}")
 
+                elif update_type == "protocol_counts" and self.ui:
+                    try:
+                        # Make sure UI has the update_protocol_counts method
+                        if hasattr(self.ui, 'update_protocol_counts'):
+                            self.ui.update_protocol_counts(data)
+                        else:
+                            print("UI doesn't have update_protocol_counts method")
+                    except Exception as e:
+                        print(f"Error updating protocol counts: {str(e)}")
+
             except Exception as e:
                 print(f"Error processing UI update: {str(e)}")
                 time.sleep(0.5)
@@ -716,6 +791,15 @@ class StablePacketCaptureBackend:
                 if self.client:
                     self.packet_count = self.client.packet_count
                     self.connected = self.client.connected
+
+                    # Get protocol counts from client
+                    if hasattr(self.client, 'get_protocol_counts'):
+                        protocol_counts = self.client.get_protocol_counts()
+                        self.protocol_counts = protocol_counts
+
+                        # Update UI with protocol counts
+                        if self.ui:
+                            self.ui_queue.put(("protocol_counts", protocol_counts))
 
                 # Queue UI updates
                 self.ui_queue.put(("packet_count", self.packet_count))
@@ -820,4 +904,3 @@ def upgrade_to_real_capture(backend):
     except ImportError:
         backend.log("Scapy not available. Using dummy packets for testing.")
         # Continue with test packets if Scapy isn't available
-

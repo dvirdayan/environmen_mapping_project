@@ -18,6 +18,17 @@ class PacketCaptureClientUI:
         self.packet_queue = queue.Queue(maxsize=1000)  # Limit queue size to prevent memory issues
         self.backend = None  # Will be set by main.py
 
+        # Protocol count data
+        self.protocol_counts = {
+            'TCP': 0,
+            'UDP': 0,
+            'HTTP': 0,
+            'HTTPS': 0,
+            'FTP': 0,
+            'SMTP': 0,
+            'Other': 0
+        }
+
         # Setup UI components
         self.setup_ui()
 
@@ -94,15 +105,32 @@ class PacketCaptureClientUI:
         stats_frame = ttk.LabelFrame(main_frame, text="Statistics", padding="10")
         stats_frame.pack(fill=tk.X, pady=5)
 
-        ttk.Label(stats_frame, text="Packets Captured:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
-        self.packet_count_var = tk.StringVar(value="0")
-        ttk.Label(stats_frame, textvariable=self.packet_count_var).grid(row=0, column=1, sticky=tk.W, padx=5, pady=5)
+        # Left side - basic stats
+        basic_stats_frame = ttk.Frame(stats_frame)
+        basic_stats_frame.grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
 
-        ttk.Label(stats_frame, text="Connection Status:").grid(row=0, column=2, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(basic_stats_frame, text="Packets Captured:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        self.packet_count_var = tk.StringVar(value="0")
+        ttk.Label(basic_stats_frame, textvariable=self.packet_count_var).grid(row=0, column=1, sticky=tk.W, padx=5,
+                                                                              pady=5)
+
+        ttk.Label(basic_stats_frame, text="Connection Status:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.connection_status_var = tk.StringVar(value="Disconnected")
-        self.status_label = ttk.Label(stats_frame, textvariable=self.connection_status_var)
-        self.status_label.grid(row=0, column=3, sticky=tk.W, padx=5, pady=5)
+        self.status_label = ttk.Label(basic_stats_frame, textvariable=self.connection_status_var)
+        self.status_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         self.update_status_indicator("Disconnected")
+
+        # Right side - protocol counts
+        protocol_frame = ttk.LabelFrame(stats_frame, text="Protocol Distribution", padding="5")
+        protocol_frame.grid(row=0, column=1, sticky=tk.E, padx=5, pady=5)
+
+        # Create protocol count labels
+        self.protocol_labels = {}
+        for i, protocol in enumerate(['TCP', 'UDP', 'HTTP', 'HTTPS', 'FTP', 'SMTP', 'Other']):
+            ttk.Label(protocol_frame, text=f"{protocol}:").grid(row=i, column=0, sticky=tk.W, padx=5, pady=2)
+            var = tk.StringVar(value="0")
+            self.protocol_labels[protocol] = var
+            ttk.Label(protocol_frame, textvariable=var, width=8).grid(row=i, column=1, sticky=tk.E, padx=5, pady=2)
 
         # Setup notebook with tabs
         notebook = ttk.Notebook(main_frame)
@@ -252,6 +280,18 @@ class PacketCaptureClientUI:
     def update_packet_count(self, count):
         """Update the packet count display"""
         self.packet_count_var.set(str(count))
+
+    def update_protocol_counts(self, protocol_counts):
+        """Update the protocol distribution display"""
+        # Store current protocol counts
+        self.protocol_counts = protocol_counts
+
+        # Update the labels with new values
+        for protocol, count in protocol_counts.items():
+            if protocol in self.protocol_labels:
+                self.protocol_labels[protocol].set(str(count))
+
+        self.log_message(f"Updated protocol distribution: {protocol_counts}")
 
     def process_packet(self, packet_data):
         """Process received packet data"""
