@@ -31,7 +31,8 @@ def main():
 
     # Create the backend
     if use_stable:
-        backend = StablePacketCaptureBackend()
+        # FIXED: Pass the UI to the backend constructor
+        backend = StablePacketCaptureBackend(ui=ui)
         backend.configure(capture_interface="Ethernet",
                           server_host="localhost",
                           server_port=65432,
@@ -49,9 +50,13 @@ def main():
             backend = ScapyPacketCaptureBackend(ui)
         else:
             # This should be replaced with your actual backup implementation
-            backend = StablePacketCaptureBackend(ui)  # Fallback to stable anyway
+            backend = StablePacketCaptureBackend(ui=ui)  # Fallback to stable anyway
         # Connect UI and backend
         ui.set_backend(backend)
+
+    # ADDED: Start processing packets in the UI
+    ui.start_log_consumer()
+    ui.start_processing_packets()
 
     # Start the main loop
     root.mainloop()

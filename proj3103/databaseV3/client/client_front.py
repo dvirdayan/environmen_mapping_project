@@ -35,11 +35,17 @@ class PacketCaptureClientUI:
         # Start log consumer
         self.start_log_consumer()
 
+        # Start packet processing
+        self.start_processing_packets()  # Make sure this gets called on init
+
         # When closing the window
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # Populate interface list
         self.populate_interfaces()
+
+        # Add initial log message to confirm logging works
+        self.log_message("Application started. Logging system initialized.")
 
     def setup_ui(self):
         # Create main frame
@@ -140,10 +146,13 @@ class PacketCaptureClientUI:
         log_frame = ttk.Frame(notebook, padding="10")
         notebook.add(log_frame, text="Logs")
 
-        # Create log text area
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15)
+        # Create log text area with white background for better visibility
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15, background="white")
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.config(state=tk.DISABLED)
+        self.log_text.config(state=tk.NORMAL)  # Make sure it's initially NORMAL so we can write to it
+        self.log_text.insert(tk.END, "Log system initialized...\n")  # Add initial text
+        self.log_text.see(tk.END)  # Scroll to end
+        self.log_text.config(state=tk.DISABLED)  # Then disable it
 
         # Packet tab
         packet_frame = ttk.Frame(notebook, padding="10")
@@ -354,7 +363,13 @@ class PacketCaptureClientUI:
     def log_message(self, message):
         """Add message to log queue"""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_queue.put(f"[{timestamp}] {message}")
+        log_entry = f"[{timestamp}] {message}"
+
+        # Add to queue
+        self.log_queue.put(log_entry)
+
+        # Also print to console for debugging
+        print(log_entry)
 
     def start_log_consumer(self):
         """Start consuming messages from the log queue"""
@@ -362,16 +377,25 @@ class PacketCaptureClientUI:
         def consume():
             try:
                 # Process all available messages
+                processed = False
                 while not self.log_queue.empty():
-                    message = self.log_queue.get_nowait()
-                    self.log_text.config(state=tk.NORMAL)
-                    self.log_text.insert(tk.END, message + "\n")
-                    self.log_text.see(tk.END)
-                    self.log_text.config(state=tk.DISABLED)
-            except queue.Empty:
-                pass
+                    try:
+                        message = self.log_queue.get_nowait()
+                        self.log_text.config(state=tk.NORMAL)
+                        self.log_text.insert(tk.END, message + "\n")
+                        self.log_text.see(tk.END)
+                        self.log_text.config(state=tk.DISABLED)
+                        processed = True
+                    except queue.Empty:
+                        break
+
+                # Force UI update if we processed any messages
+                if processed:
+                    self.root.update_idletasks()
+
             except Exception as e:
                 print(f"Error consuming log: {e}")
+                traceback.print_exc()
 
             # Schedule next check
             self.root.after(100, consume)
