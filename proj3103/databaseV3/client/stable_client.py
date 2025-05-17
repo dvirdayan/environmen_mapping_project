@@ -591,6 +591,21 @@ class StableSocketClient:
         """Return the current protocol counts received from server"""
         return self.protocol_counts.copy()
 
+    def get_protocol_percentages(self):
+        """Calculate protocol percentages based on current counts"""
+        percentages = {}
+        total = sum(self.protocol_counts.values())
+
+        if total > 0:
+            for protocol, count in self.protocol_counts.items():
+                percentages[protocol] = round((count / total) * 100, 2)
+        else:
+            # If no packets yet, set all to 0%
+            for protocol in self.protocol_counts.keys():
+                percentages[protocol] = 0.0
+
+        return percentages
+
 
 class StablePacketCaptureBackend:
     def __init__(self, ui=None):
