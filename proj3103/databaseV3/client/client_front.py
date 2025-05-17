@@ -72,7 +72,7 @@ class PacketCaptureClientUI:
                                                                                       padx=5, pady=5)
 
         ttk.Label(connection_frame, text="Server Port:").grid(row=1, column=2, sticky=tk.W, padx=5, pady=5)
-        self.server_port_var = tk.IntVar(value=65432)
+        self.server_port_var = tk.IntVar(value=9007)
         ttk.Entry(connection_frame, textvariable=self.server_port_var, width=10).grid(row=1, column=3, sticky=tk.W,
                                                                                       padx=5, pady=5)
 

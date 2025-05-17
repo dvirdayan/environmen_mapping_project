@@ -602,7 +602,7 @@ class StablePacketCaptureBackend:
         # Connection settings (will be set by configure method)
         self.capture_interface = None
         self.server_host = 'localhost'
-        self.server_port = 65432
+        self.server_port = 9007
         self.env_name = None
         self.env_password = None
 
