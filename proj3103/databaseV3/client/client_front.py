@@ -67,7 +67,7 @@ class PacketCaptureClientUI:
 
         # Server settings
         ttk.Label(connection_frame, text="Server Host:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        self.server_host_var = tk.StringVar(value="192.168.0.113")
+        self.server_host_var = tk.StringVar(value="")
         ttk.Entry(connection_frame, textvariable=self.server_host_var, width=30).grid(row=1, column=1, sticky=tk.W,
                                                                                       padx=5, pady=5)
 
