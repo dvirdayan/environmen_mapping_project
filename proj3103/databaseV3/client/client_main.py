@@ -5,33 +5,28 @@ import os
 # Add the current directory to the path to ensure modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-# Import the UI
+# Import the UI and the pie chart integration
 from client_front import PacketCaptureClientUI
-# Import only from stable_client.py for the stable backend
+from protocol_pie_chart import integrate_pie_chart_to_ui
 from stable_client import StablePacketCaptureBackend, upgrade_to_real_capture, SimplePacketHandler
-
-
-# Define this class here or import properly if it exists elsewhere
-class ScapyPacketCaptureBackend:
-    def __init__(self, ui=None):
-        self.ui = ui
-        # Add necessary implementation or pass if this is just a placeholder
 
 
 def main():
     # Choose which backend implementation to use
-    use_stable = True  # Set to True to use the new stable backend
-    use_scapy = False  # Only used if use_stable is False
+    use_stable = True
 
     # Create the root window
     root = tk.Tk()
 
-    # Create the UI
-    ui = PacketCaptureClientUI(root)
+    # Enhance the UI class with pie chart
+    EnhancedPacketCaptureClientUI = integrate_pie_chart_to_ui(PacketCaptureClientUI)
+
+    # Create the enhanced UI
+    ui = EnhancedPacketCaptureClientUI(root)
 
     # Create the backend
     if use_stable:
-        # FIXED: Pass the UI to the backend constructor
+        # Pass the UI to the backend constructor
         backend = StablePacketCaptureBackend(ui=ui)
         backend.configure(capture_interface="Ethernet",
                           server_host="localhost",
@@ -45,16 +40,11 @@ def main():
         # This will switch from test packets to real packet capture after 10 seconds
         root.after(10000, lambda: upgrade_to_real_capture(backend))
     else:
-        # Use the original backends - these need proper implementations
-        if use_scapy:
-            backend = ScapyPacketCaptureBackend(ui)
-        else:
-            # This should be replaced with your actual backup implementation
-            backend = StablePacketCaptureBackend(ui=ui)  # Fallback to stable anyway
-        # Connect UI and backend
+        # Fallback to stable backend
+        backend = StablePacketCaptureBackend(ui=ui)
         ui.set_backend(backend)
 
-    # ADDED: Start processing packets in the UI
+    # Start processing packets in the UI
     ui.start_log_consumer()
     ui.start_processing_packets()
 
