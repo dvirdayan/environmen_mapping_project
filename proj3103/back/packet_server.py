@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 class PacketServer:
-    def __init__(self, host='localhost', port=65432):
+    def __init__(self, host='0.0.0.0', port=9007):
         self.host = host
         self.port = port
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -54,6 +54,9 @@ class PacketServer:
         # Create stats sender thread
         self.stats_thread = threading.Thread(target=self._send_stats_periodically)
         self.stats_thread.daemon = True
+
+        self.received_packet_ids = set()
+        self.packet_id_lock = threading.Lock()
 
     def _send_stats_periodically(self):
         """Send protocol statistics to all connected clients periodically"""
@@ -143,24 +146,48 @@ class PacketServer:
         else:
             return 'Other'
 
+    # Fix for packet_server.py: print_packet_info method
     def print_packet_info(self, packet_data, client_addr):
-        """Pretty print packet information"""
+        """Pretty print packet information and update counts if unique"""
         try:
             packet = json.loads(packet_data)
 
-            # Get environment for this client
-            env_name = "default"
-            with self.clients_lock:
-                if client_addr in self.clients:
-                    env_name = self.clients[client_addr].get('environment', 'default')
+            # Skip system/heartbeat messages
+            if packet.get('type') in ['heartbeat', 'stats', 'ack']:
+                return False
 
-            # Use environment from packet if available (for newer clients)
+            # Check for a unique packet ID
+            packet_id = packet.get('packet_id')
+            if not packet_id:
+                print(f"[SERVER] Missing packet_id from {client_addr}, ignoring")
+                return False
+
+            # Deduplication: skip if already processed
+            with self.packet_id_lock:
+                if packet_id in self.received_packet_ids:
+                    print(f"[SERVER] Duplicate packet ignored from {client_addr}: {packet_id}")
+                    return False
+                self.received_packet_ids.add(packet_id)
+
+            print(f"[SERVER] Processing new packet_id from {client_addr}: {packet_id}")
+
+            # Determine environment
+            env_name = "default"
+            # Override with packet's environment if available
             packet_env = packet.get('env_name')
             if packet_env:
                 env_name = packet_env
 
-            # Determine and update protocol count
+            # Determine protocol
             protocol = self.determine_protocol(packet)
+
+            # Update client protocol counts
+            with self.clients_lock:
+                if client_addr in self.clients:
+                    if protocol in self.clients[client_addr]['protocol_counts']:
+                        self.clients[client_addr]['protocol_counts'][protocol] += 1
+                    else:
+                        self.clients[client_addr]['protocol_counts']['Other'] += 1
 
             # Update global protocol counts
             with self.protocol_lock:
@@ -169,7 +196,7 @@ class PacketServer:
                 else:
                     self.protocol_counts['Other'] += 1
 
-            # Update environment-specific protocol counts
+            # Update environment-specific counts
             with self.environment_lock:
                 if env_name in self.environments:
                     if protocol in self.environments[env_name]['protocol_counts']:
@@ -177,35 +204,19 @@ class PacketServer:
                     else:
                         self.environments[env_name]['protocol_counts']['Other'] += 1
 
-                    # Increment environment packet count
                     self.environments[env_name]['packet_count'] += 1
-
-            # Print packet info with environment
-            print("\n" + "=" * 50)
-            print(f"Environment: {env_name}")
-            print(f"Client: {client_addr[0]}:{client_addr[1]}")
-            print(f"Timestamp: {packet.get('timestamp', 'N/A')}")
-            print(f"Highest Layer: {packet.get('highest_layer', 'N/A')}")
-            print(f"Protocol: {packet.get('protocol', 'N/A')}")
-
-            # Print IP information if available
-            print(f"Source IP: {packet.get('source_ip', 'N/A')}")
-            print(f"Destination IP: {packet.get('destination_ip', 'N/A')}")
-            print(f"Source Port: {packet.get('source_port', 'N/A')}")
-            print(f"Destination Port: {packet.get('destination_port', 'N/A')}")
-            print(f"Packet Length: {packet.get('packet_length', 'N/A')} bytes")
-            print("=" * 50 + "\n")
 
             # Notify UI if callback is registered
             if self.ui_update_callback:
                 self.ui_update_callback()
 
             return True
+
         except json.JSONDecodeError as e:
-            print(f"Error decoding JSON: {e}")
-            print(f"Received data: {packet_data}")
+            print(f"[SERVER] Error decoding JSON: {e}")
+            print(f"[SERVER] Received data: {packet_data}")
         except Exception as e:
-            print(f"Error processing packet: {e}")
+            print(f"[SERVER] Error processing packet: {e}")
 
         return False
 
@@ -311,11 +322,15 @@ class PacketServer:
                                     # Register the client
                                     with self.clients_lock:
                                         self.clients[addr] = {
-                                            'packet_count': 0,
+                                            'packet_count': 0,  # Start with 0 for new clients
+                                            'protocol_counts': {
+                                                'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                'FTP': 0, 'SMTP': 0, 'Other': 0
+                                            },
                                             'connected': True,
                                             'environment': env_name,
                                             'account_info': account_info,
-                                            'socket': conn  # Store socket for stats sending
+                                            'socket': conn
                                         }
 
                                     with self.environment_lock:
@@ -360,6 +375,9 @@ class PacketServer:
             # Make socket non-blocking for the packet processing loop
             conn.setblocking(False)
 
+            # Make socket non-blocking for the packet processing loop
+            conn.setblocking(False)
+
             # Process remaining data in buffer
             if buffer and authenticated:
                 for line in buffer.strip().split('\n'):
@@ -369,7 +387,8 @@ class PacketServer:
                             with self.clients_lock:
                                 if addr in self.clients:
                                     self.clients[addr]['packet_count'] += 1
-                                    # Send acknowledgment back to client
+
+                                    # Only send protocol counts in ack, not packet count
                                     try:
                                         # Get protocol counts for this environment
                                         env_protocol_counts = {}
@@ -378,12 +397,12 @@ class PacketServer:
                                                 env_protocol_counts = self.environments[env_name][
                                                     'protocol_counts'].copy()
 
-                                        # Enhanced ACK with protocol counts
+                                        # Simplified ACK with only protocol counts
                                         ack_message = json.dumps({
                                             'type': 'ack',
-                                            'count': self.clients[addr]['packet_count'],
                                             'protocol_counts': env_protocol_counts
                                         }) + '\n'
+
                                         conn.sendall(ack_message.encode('utf-8'))
                                     except Exception as e:
                                         print(f"Error sending ACK: {e}")
@@ -402,7 +421,6 @@ class PacketServer:
 
                         # Process packets
                         buffer += data
-                        print(f"Received data from {addr}, buffer now: {len(buffer)} bytes")  # Debug logging
 
                         # Process complete lines (packets)
                         while '\n' in buffer:
@@ -414,7 +432,7 @@ class PacketServer:
                                         if addr in self.clients:
                                             self.clients[addr]['packet_count'] += 1
 
-                                            # Send acknowledgment with protocol counts back to client
+                                            # Send acknowledgment with only protocol counts back to client
                                             try:
                                                 # Get protocol counts for this environment
                                                 env_protocol_counts = {}
@@ -423,16 +441,14 @@ class PacketServer:
                                                         env_protocol_counts = self.environments[env_name][
                                                             'protocol_counts'].copy()
 
-                                                # Enhanced ACK with protocol counts
+                                                # Simplified ACK without count
                                                 ack_message = json.dumps({
                                                     'type': 'ack',
-                                                    'count': self.clients[addr]['packet_count'],
                                                     'protocol_counts': env_protocol_counts
                                                 }) + '\n'
                                                 conn.sendall(ack_message.encode('utf-8'))
                                             except Exception as e:
                                                 print(f"Error sending ACK: {e}")
-
                 except (ConnectionResetError, BrokenPipeError) as e:
                     print(f"Connection with {addr} was reset: {e}")
                     break

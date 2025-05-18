@@ -2,14 +2,13 @@ import tkinter as tk
 import sys
 import os
 
-# Add the current directory to the path to ensure modules can be imported
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
 # Import the UI and the pie chart integration
 from client_front import PacketCaptureClientUI
-from protocol_pie_chart import integrate_pie_chart_to_ui
+from pie_chart import integrate_pie_chart_to_ui
 from stable_client import StablePacketCaptureBackend, upgrade_to_real_capture, SimplePacketHandler
 
+# Add the current directory to the path to ensure modules can be imported
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 def main():
     # Choose which backend implementation to use

@@ -5,6 +5,7 @@ import socket
 import json
 import select
 import traceback
+import uuid
 from datetime import datetime
 
 
@@ -97,19 +98,20 @@ class StableSocketClient:
         self.port = port
         self.socket = None
         self.connected = False
-        self.running = False  # Add this attribute
+        self.running = False
         self.logger = logger
         self.reconnect_delay = 2.0
         self.send_thread = None
         self.recv_thread = None
         self.last_ack_time = 0
-        self.packet_count = 0
+        self.packet_count = 0  # This is now the single source of truth for packet count
+        self.local_packet_count = 0  # Initialize local_packet_count here
         self.auth_data = None
-        self.env_name = None  # Add this attribute
-        self.lock = threading.Lock()  # Add a lock for thread safety
+        self.env_name = None
+        self.lock = threading.Lock()
         self.send_queue = queue.Queue()
-
-        # Add protocol counts dict that will be updated from server
+        self.pending_packets = set()
+        self.pending_packets_lock = threading.Lock()
         self.protocol_counts = {
             'TCP': 0,
             'UDP': 0,
@@ -119,7 +121,6 @@ class StableSocketClient:
             'SMTP': 0,
             'Other': 0
         }
-        # Add callback for protocol updates
         self.protocol_update_callback = None
 
     def start(self):
@@ -162,8 +163,6 @@ class StableSocketClient:
             self.logger(message)
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-
-    # In your client code, modify the connect method:
 
     def connect(self):
         """Attempt to connect to the server with improved error handling."""
@@ -260,6 +259,14 @@ class StableSocketClient:
             self.connected = True
             self.log(f"Successfully connected to server {self.host}:{self.port}")
 
+            # Reset packet count on successful reconnection
+            with self.lock:
+                self.packet_count = 0
+
+            # Clear pending packets on reconnection
+            with self.pending_packets_lock:
+                self.pending_packets.clear()
+
             # Wait a short time before sending packets to ensure everything is ready
             time.sleep(0.5)
             return True
@@ -343,19 +350,29 @@ class StableSocketClient:
         self.log("Client stopped")
 
     def send_packet(self, packet_dict):
-        """Queue a packet for sending"""
         if not self.running:
             return False
 
         try:
-            # Make sure we're sending a proper packet structure
             if isinstance(packet_dict, dict):
-                # Add environment name if it's not already there
                 if self.env_name and 'env_name' not in packet_dict:
                     packet_dict['env_name'] = self.env_name
 
-                serialized = json.dumps(packet_dict) + '\n'  # Ensure we have a newline
+                # Always ensure packet has a unique ID
+                if 'packet_id' not in packet_dict:
+                    packet_dict['packet_id'] = str(uuid.uuid4())
+
+                # Add to pending packets set with lock
+                with self.pending_packets_lock:
+                    packet_id = packet_dict['packet_id']
+                    self.pending_packets.add(packet_id)
+
+                serialized = json.dumps(packet_dict) + '\n'
                 self.send_queue.put(serialized)
+
+                # No longer increment packet count here - we'll rely on the server's count
+                # The log message doesn't need to show our count since it may not be accurate yet
+                self.log(f"[CLIENT] Queued packet {packet_dict['packet_id']}")
                 return True
             else:
                 self.log(f"Error: Expected dict for packet, got {type(packet_dict)}")
@@ -547,20 +564,15 @@ class StableSocketClient:
                                 if line.strip():  # Skip empty lines
                                     try:
                                         response = json.loads(line)
-                                        # Concise logging
                                         msg_type = response.get('type', 'unknown')
                                         self.log(f"Received: {msg_type}")
 
                                         if msg_type == 'ack':
                                             self.last_ack_time = time.time()
-                                            self.packet_count += 1
 
-                                            # Get protocol counts from the server if available
+                                            # Get protocol counts if available (still useful)
                                             if 'protocol_counts' in response:
-                                                # Update our local protocol counts
                                                 self.protocol_counts = response['protocol_counts']
-
-                                                # Call the callback if registered
                                                 if self.protocol_update_callback:
                                                     self.protocol_update_callback(self.protocol_counts)
 
@@ -568,12 +580,9 @@ class StableSocketClient:
                                             # Update protocol counts from stats message
                                             if 'protocol_counts' in response:
                                                 self.protocol_counts = response['protocol_counts']
-
-                                                # Call the callback if registered
                                                 if self.protocol_update_callback:
                                                     self.protocol_update_callback(self.protocol_counts)
 
-                                            self.log(f"Updated protocol counts from server")
                                     except json.JSONDecodeError:
                                         self.log(f"Invalid JSON: {line[:30]}...")
                         except UnicodeDecodeError:
@@ -586,6 +595,13 @@ class StableSocketClient:
                 self.log(f"Unexpected error in receive loop: {str(e)}")
                 traceback.print_exc()
                 time.sleep(1)
+
+        # Modification for get_packet_count to use local counter
+
+    def get_packet_count(self):
+        """Return the current packet count from local tracking"""
+        with self.lock:
+            return self.local_packet_count
 
     def get_protocol_counts(self):
         """Return the current protocol counts received from server"""
@@ -804,6 +820,7 @@ class StablePacketCaptureBackend:
         while self.running:
             try:
                 if self.client:
+                    # Get the packet count directly from client
                     self.packet_count = self.client.packet_count
                     self.connected = self.client.connected
 

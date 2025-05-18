@@ -4,11 +4,12 @@ import threading
 import subprocess
 
 # Import the database class
-from cdatabase import CredentialDatabase
+from ..cdatabase import CredentialDatabase
 
 # Import GUI components
-from gui.auth_frames import AuthFrame, LoginFrame, RegisterFrame
-from gui.dashboard import DashboardFrame
+from auth_frames import AuthFrame, LoginFrame, RegisterFrame
+from dashboard import DashboardFrame
+
 
 class CredentialManagerGUI:
     def __init__(self, root):

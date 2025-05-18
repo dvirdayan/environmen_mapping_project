@@ -300,8 +300,6 @@ class PacketCaptureClientUI:
             if protocol in self.protocol_labels:
                 self.protocol_labels[protocol].set(str(count))
 
-        self.log_message(f"Updated protocol distribution: {protocol_counts}")
-
     def process_packet(self, packet_data):
         """Process received packet data"""
         try:
