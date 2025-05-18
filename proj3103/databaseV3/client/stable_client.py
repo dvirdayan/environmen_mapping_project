@@ -951,4 +951,3 @@ def upgrade_to_real_capture(backend):
 
     except ImportError:
         backend.log("Scapy not available. Using dummy packets for testing.")
-        # Continue with test packets if Scapy isn't available

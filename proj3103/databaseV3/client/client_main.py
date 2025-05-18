@@ -10,6 +10,7 @@ from stable_client import StablePacketCaptureBackend, upgrade_to_real_capture, S
 # Add the current directory to the path to ensure modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+
 def main():
     # Choose which backend implementation to use
     use_stable = True
