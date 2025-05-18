@@ -2,7 +2,7 @@ import socket
 import threading
 import json
 import time
-import select  # Added missing import
+import select
 from datetime import datetime
 
 
@@ -11,14 +11,17 @@ class PacketServer:
         self.host = host
         self.port = port
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,
-                                      1)  # Added to prevent "address already in use"
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen()
         print(f"Server listening on {self.host}:{self.port}")
 
-        # Dictionary to store client information: {client_addr: packet_count}
-        self.clients = {}
+        # Dictionary to store client information by username: {username: client_info}
+        self.clients_by_username = {}
+
+        # Dictionary to track active connections: {client_addr: username}
+        self.active_connections = {}
+
         # Add environment tracking
         self.environments = {}  # Dictionary to store env data: {env_name: {clients, packets}}
         self.environment_lock = threading.Lock()
@@ -28,6 +31,7 @@ class PacketServer:
             # Default environment for backward compatibility
             "default": "default_password"
         }
+
         # Dictionary to store protocol counts: {protocol_name: count}
         self.protocol_counts = {
             'TCP': 0,
@@ -66,9 +70,10 @@ class PacketServer:
             # Get a list of connected clients
             connected_clients = {}
             with self.clients_lock:
-                for addr, client_info in self.clients.items():
-                    if client_info.get('connected', False):
-                        connected_clients[addr] = client_info
+                for addr, username in self.active_connections.items():
+                    if username in self.clients_by_username and self.clients_by_username[username].get('connected',
+                                                                                                       False):
+                        connected_clients[addr] = self.clients_by_username[username]
 
             if not connected_clients:
                 continue
@@ -100,13 +105,13 @@ class PacketServer:
                         try:
                             socket_conn.sendall((json.dumps(stats_message) + '\n').encode('utf-8'))
                         except Exception as e:
-                            print(f"Error sending stats to {addr}: {e}")
+                            print(f"Error sending stats to {client_info['username']}: {e}")
                             # Mark client as disconnected if we can't send to it
                             with self.clients_lock:
-                                if addr in self.clients:
-                                    self.clients[addr]['connected'] = False
+                                if client_info['username'] in self.clients_by_username:
+                                    self.clients_by_username[client_info['username']]['connected'] = False
                 except Exception as e:
-                    print(f"Error preparing stats for {addr}: {e}")
+                    print(f"Error preparing stats for {client_info['username']}: {e}")
 
     def register_ui_callback(self, callback):
         """Register a callback function that will be called when data changes"""
@@ -115,7 +120,17 @@ class PacketServer:
     def get_clients_data(self):
         """Get a copy of the current clients data"""
         with self.clients_lock:
-            return self.clients.copy()
+            # Create a dictionary that maps active connections to client info
+            result = {}
+            for addr, username in self.active_connections.items():
+                if username in self.clients_by_username:
+                    result[addr] = self.clients_by_username[username].copy()
+            return result
+
+    def get_all_clients_data(self):
+        """Get all clients data including disconnected clients"""
+        with self.clients_lock:
+            return self.clients_by_username.copy()
 
     def get_protocol_data(self):
         """Get a copy of the current protocol data"""
@@ -146,7 +161,6 @@ class PacketServer:
         else:
             return 'Other'
 
-    # Fix for packet_server.py: print_packet_info method
     def print_packet_info(self, packet_data, client_addr):
         """Pretty print packet information and update counts if unique"""
         try:
@@ -162,14 +176,23 @@ class PacketServer:
                 print(f"[SERVER] Missing packet_id from {client_addr}, ignoring")
                 return False
 
+            # Get username for this client connection
+            username = None
+            with self.clients_lock:
+                username = self.active_connections.get(client_addr)
+
+            if not username:
+                print(f"[SERVER] Unknown client {client_addr}, ignoring packet")
+                return False
+
             # Deduplication: skip if already processed
             with self.packet_id_lock:
                 if packet_id in self.received_packet_ids:
-                    print(f"[SERVER] Duplicate packet ignored from {client_addr}: {packet_id}")
+                    print(f"[SERVER] Duplicate packet ignored from user {username}: {packet_id}")
                     return False
                 self.received_packet_ids.add(packet_id)
 
-            print(f"[SERVER] Processing new packet_id from {client_addr}: {packet_id}")
+            print(f"[SERVER] Processing new packet_id from user {username}: {packet_id}")
 
             # Determine environment
             env_name = "default"
@@ -183,11 +206,11 @@ class PacketServer:
 
             # Update client protocol counts
             with self.clients_lock:
-                if client_addr in self.clients:
-                    if protocol in self.clients[client_addr]['protocol_counts']:
-                        self.clients[client_addr]['protocol_counts'][protocol] += 1
+                if username in self.clients_by_username:
+                    if protocol in self.clients_by_username[username]['protocol_counts']:
+                        self.clients_by_username[username]['protocol_counts'][protocol] += 1
                     else:
-                        self.clients[client_addr]['protocol_counts']['Other'] += 1
+                        self.clients_by_username[username]['protocol_counts']['Other'] += 1
 
             # Update global protocol counts
             with self.protocol_lock:
@@ -223,8 +246,6 @@ class PacketServer:
     # Add method to verify environment credentials
     def verify_environment(self, env_name, env_password):
         """Verify environment credentials"""
-        print(f"Current credentials: {self.env_credentials}")
-        print(f"Verifying environment: {env_name} with password: {env_password}")
         if not env_name:
             return True  # Allow legacy clients without environment
 
@@ -270,11 +291,12 @@ class PacketServer:
             return {}
 
     def handle_client(self, conn, addr):
-        print(f"New client connected from {addr}")
+        print(f"New connection from {addr}")
 
         env_name = "default"  # Default environment for backward compatibility
         authenticated = False
         buffer = ""
+        username = None
 
         try:
             # Make socket non-blocking for timeout handling
@@ -282,26 +304,32 @@ class PacketServer:
 
             # Wait for authentication message
             auth_data = conn.recv(4096).decode('utf-8')
-            print(f"Received auth data from {addr}: {auth_data[:100]}...")  # Debug logging
 
             if auth_data:
                 try:
                     auth_lines = auth_data.strip().split('\n')
-                    print(f"Auth lines count: {len(auth_lines)}")  # Debug logging
 
                     for i, line in enumerate(auth_lines):
                         if not line.strip():
                             continue
                         try:
                             auth_json = json.loads(line)
-                            print(f"Auth JSON: {auth_json}")  # Debug logging
 
                             if auth_json.get('type') == 'auth':
                                 client_env_name = auth_json.get('env_name')
                                 env_password = auth_json.get('env_password')
                                 account_info = auth_json.get('account_info', {})
 
-                                print(f"Client {addr} attempting authentication for environment: {client_env_name}")
+                                # Extract username from auth data
+                                username = auth_json.get('username')
+                                if not username and isinstance(account_info, dict):
+                                    username = account_info.get('username')
+                                if not username and isinstance(account_info, str):
+                                    username = account_info
+                                if not username:
+                                    username = f"user_{addr[0]}_{addr[1]}"  # Fallback username
+
+                                print(f"Client {addr} attempting authentication as user: {username}")
 
                                 if self.verify_environment(client_env_name, env_password):
                                     env_name = client_env_name if client_env_name else "default"
@@ -319,23 +347,46 @@ class PacketServer:
                                                 'packet_count': 0
                                             }
 
-                                    # Register the client
+                                    # Register or update the client
                                     with self.clients_lock:
-                                        self.clients[addr] = {
-                                            'packet_count': 0,  # Start with 0 for new clients
-                                            'protocol_counts': {
-                                                'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                                'FTP': 0, 'SMTP': 0, 'Other': 0
-                                            },
-                                            'connected': True,
-                                            'environment': env_name,
-                                            'account_info': account_info,
-                                            'socket': conn
-                                        }
+                                        # If user exists, update connection info but keep counts
+                                        if username in self.clients_by_username:
+                                            # Update with new connection details
+                                            self.clients_by_username[username]['connected'] = True
+                                            self.clients_by_username[username]['environment'] = env_name
+                                            self.clients_by_username[username]['account_info'] = account_info
+                                            self.clients_by_username[username]['socket'] = conn
+                                            self.clients_by_username[username]['last_addr'] = addr
+                                            print(f"User {username} reconnected, preserving packet count: {self.clients_by_username[username]['packet_count']}")
+                                        else:
+                                            # Create new user entry
+                                            self.clients_by_username[username] = {
+                                                'username': username,
+                                                'packet_count': 0,  # Start with 0 for new users
+                                                'protocol_counts': {
+                                                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                    'FTP': 0, 'SMTP': 0, 'Other': 0
+                                                },
+                                                'connected': True,
+                                                'environment': env_name,
+                                                'account_info': account_info,
+                                                'socket': conn,
+                                                'last_addr': addr
+                                            }
+                                            print(f"New user {username} registered")
 
+                                        # Map this connection to the username
+                                        self.active_connections[addr] = username
+                                    # Properly handle account_info
+                                    account_info = auth_json.get('account_info')
+                                    # If account_info is a string, keep it as is
+                                    # If it's empty or None, set to a more helpful value
+                                    if account_info in [None, "", {}, "null", "undefined"]:
+                                        account_info = "No account info"
                                     with self.environment_lock:
-                                        self.environments[env_name]['clients'][addr] = {
-                                            'packet_count': 0,
+                                        self.environments[env_name]['clients'][username] = {
+                                            'username': username,
+                                            'packet_count': self.clients_by_username[username]['packet_count'],
                                             'connected': True,
                                             'account_info': account_info
                                         }
@@ -343,22 +394,19 @@ class PacketServer:
                                     # Send auth success response
                                     response = {
                                         'status': 'authenticated',
-                                        'message': f'Connected to environment: {env_name}'
+                                        'message': f'Connected as user: {username}'
                                     }
-                                    print(f"Sending auth success: {response}")  # Debug logging
                                     conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
 
                                     # Capture any additional data (like packet lines)
                                     remaining_lines = auth_lines[i + 1:]
                                     buffer = '\n'.join(remaining_lines)
-                                    print(f"Remaining buffer after auth: {buffer[:100]}...")  # Debug logging
                                 else:
                                     # Invalid credentials
                                     response = {
                                         'status': 'error',
-                                        'message': 'Invalid environment credentials'
+                                        'message': 'Invalid credentials'
                                     }
-                                    print(f"Sending auth failure: {response}")  # Debug logging
                                     conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
                                     return
                                 break  # stop after handling one valid auth
@@ -369,11 +417,8 @@ class PacketServer:
                         self.ui_update_callback()
 
                 except Exception as e:
-                    print(f"Error during initial authentication parsing: {e}")
+                    print(f"Error during authentication: {e}")
                     return
-
-            # Make socket non-blocking for the packet processing loop
-            conn.setblocking(False)
 
             # Make socket non-blocking for the packet processing loop
             conn.setblocking(False)
@@ -385,24 +430,21 @@ class PacketServer:
                         success = self.print_packet_info(line, addr)
                         if success:
                             with self.clients_lock:
-                                if addr in self.clients:
-                                    self.clients[addr]['packet_count'] += 1
+                                if username in self.clients_by_username:
+                                    self.clients_by_username[username]['packet_count'] += 1
 
-                                    # Only send protocol counts in ack, not packet count
+                                    # Get protocol counts for this environment
+                                    env_protocol_counts = {}
+                                    with self.environment_lock:
+                                        if env_name in self.environments:
+                                            env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+
+                                    # Send ACK
                                     try:
-                                        # Get protocol counts for this environment
-                                        env_protocol_counts = {}
-                                        with self.environment_lock:
-                                            if env_name in self.environments:
-                                                env_protocol_counts = self.environments[env_name][
-                                                    'protocol_counts'].copy()
-
-                                        # Simplified ACK with only protocol counts
                                         ack_message = json.dumps({
                                             'type': 'ack',
                                             'protocol_counts': env_protocol_counts
                                         }) + '\n'
-
                                         conn.sendall(ack_message.encode('utf-8'))
                                     except Exception as e:
                                         print(f"Error sending ACK: {e}")
@@ -416,7 +458,7 @@ class PacketServer:
                     if conn in readable:
                         data = conn.recv(4096).decode('utf-8')
                         if not data:  # Connection closed
-                            print(f"Client {addr} disconnected")
+                            print(f"Client {username} disconnected")
                             break
 
                         # Process packets
@@ -429,19 +471,18 @@ class PacketServer:
                                 success = self.print_packet_info(line, addr)
                                 if success:
                                     with self.clients_lock:
-                                        if addr in self.clients:
-                                            self.clients[addr]['packet_count'] += 1
+                                        if username in self.clients_by_username:
+                                            self.clients_by_username[username]['packet_count'] += 1
 
-                                            # Send acknowledgment with only protocol counts back to client
+                                            # Send acknowledgment with protocol counts
                                             try:
                                                 # Get protocol counts for this environment
                                                 env_protocol_counts = {}
                                                 with self.environment_lock:
                                                     if env_name in self.environments:
-                                                        env_protocol_counts = self.environments[env_name][
-                                                            'protocol_counts'].copy()
+                                                        env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
 
-                                                # Simplified ACK without count
+                                                # Send ACK
                                                 ack_message = json.dumps({
                                                     'type': 'ack',
                                                     'protocol_counts': env_protocol_counts
@@ -450,12 +491,12 @@ class PacketServer:
                                             except Exception as e:
                                                 print(f"Error sending ACK: {e}")
                 except (ConnectionResetError, BrokenPipeError) as e:
-                    print(f"Connection with {addr} was reset: {e}")
+                    print(f"Connection with {username} was reset: {e}")
                     break
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    print(f"Error processing data from {addr}: {e}")
+                    print(f"Error processing data from {username}: {e}")
                     break
 
         except Exception as e:
@@ -463,13 +504,18 @@ class PacketServer:
         finally:
             # Update client status
             with self.clients_lock:
-                if addr in self.clients:
-                    self.clients[addr]['connected'] = False
-                    self.clients[addr]['socket'] = None  # Remove socket reference
+                if addr in self.active_connections:
+                    username = self.active_connections[addr]
+                    if username in self.clients_by_username:
+                        self.clients_by_username[username]['connected'] = False
+                        self.clients_by_username[username]['socket'] = None  # Remove socket reference
+
+                    # Remove from active connections
+                    del self.active_connections[addr]
 
             with self.environment_lock:
-                if env_name in self.environments and addr in self.environments[env_name]['clients']:
-                    self.environments[env_name]['clients'][addr]['connected'] = False
+                if env_name in self.environments and username and username in self.environments[env_name]['clients']:
+                    self.environments[env_name]['clients'][username]['connected'] = False
 
             # Notify UI if registered
             if self.ui_update_callback:
@@ -480,7 +526,7 @@ class PacketServer:
                 conn.close()
             except:
                 pass
-            print(f"Connection with {addr} closed")
+            print(f"Connection with {username or addr} closed")
 
     def load_environments_from_db(self, db_file="../databaseV3/credentials.db"):
         """Load environments from the credential database"""
@@ -501,7 +547,6 @@ class PacketServer:
 
             conn.close()
             print(f"Loaded {len(self.env_credentials)} environments from database")
-            print(f"Environment credentials: {self.env_credentials}")
         except Exception as e:
             print(f"Error loading environments from database: {e}")
             print("Using default environment only")
@@ -548,10 +593,6 @@ if __name__ == "__main__":
     from packet_server_ui import start_ui
 
     server = PacketServer()
-
-    server.load_environments_from_db()  # First load DB
-
-    print("Added test environment with credentials: C1/CCC")
-
+    server.load_environments_from_db()
     server.start()
     start_ui(server)

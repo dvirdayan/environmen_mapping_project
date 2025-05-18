@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
 
-from gui.dialogs import AddEnvironmentDialog
+from proj3103.databaseV3.gui.dialogs import AddEnvironmentDialog
 
 
 class MyEnvironmentsTab:

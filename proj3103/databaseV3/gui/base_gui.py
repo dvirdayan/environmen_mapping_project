@@ -2,13 +2,15 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import threading
 import subprocess
+import json
+import os
 
 # Import the database class
-from ..cdatabase import CredentialDatabase
+from proj3103.databaseV3.cdatabase import CredentialDatabase
 
 # Import GUI components
-from auth_frames import AuthFrame, LoginFrame, RegisterFrame
-from dashboard import DashboardFrame
+from proj3103.databaseV3.gui.auth_frames import AuthFrame, LoginFrame, RegisterFrame
+from proj3103.databaseV3.gui.dashboard import DashboardFrame
 
 
 class CredentialManagerGUI:
@@ -79,18 +81,45 @@ class CredentialManagerGUI:
             self.root.unbind('<Return>')  # Unbind the Enter key
             self.show_main_dashboard()
 
-            # Start the client automatically if the user is not an admin
-            if not is_admin:
-                self.start_client()
+            # Save config for client - now only when button is clicked
+            self.save_user_config(username)
         else:
             messagebox.showerror("Login Failed", "Invalid username or password.")
 
+    def save_user_config(self, username):
+        """Save the current username to a temporary config file for the client."""
+        config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client")
+        os.makedirs(config_dir, exist_ok=True)
+
+        config_path = os.path.join(config_dir, "user_config.json")
+
+        # Get user environments from database
+        environments = self.db.get_environments(self.current_user_id)
+
+        # Create config with username and available environments
+        config = {
+            "username": username,
+            "user_id": self.current_user_id,
+            "environments": environments
+        }
+
+        # Write to config file
+        with open(config_path, "w") as f:
+            json.dump(config, f)
+
+        return config_path
+
     def start_client(self):
-        """Start the packet capture client in a separate process."""
+        """Start the packet capture client in a separate process with username."""
         try:
-            subprocess.Popen(["python", "client/client_main.py"])
+            # Config should already be saved during login
+            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client", "user_config.json")
+
+            # Start client process with config path as argument
+            subprocess.Popen(["python", "client/client_main.py", "--config", config_path])
+
             messagebox.showinfo("Client Started",
-                                "The packet capture client has been started in a separate window.")
+                                f"The packet capture client has been started for user '{self.current_username}'.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start client: {str(e)}")
 
@@ -127,5 +156,6 @@ class CredentialManagerGUI:
             self.is_admin,
             self.logout_user,
             self.current_user_id,
-            self.db
+            self.db,
+            self.start_client  # Pass the client start function
         )

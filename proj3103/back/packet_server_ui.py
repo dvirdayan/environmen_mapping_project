@@ -55,10 +55,11 @@ class PacketMonitorUI:
         client_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # Create a treeview to display client information
-        columns = ("ip", "port", "packets", "environment", "account", "status")
+        columns = ("username", "ip", "port", "packets", "environment", "account", "status")
         client_tree = ttk.Treeview(client_frame, columns=columns, show="headings")
 
         # Define column headings
+        client_tree.heading("username", text="Username")
         client_tree.heading("ip", text="Client IP")
         client_tree.heading("port", text="Port")
         client_tree.heading("packets", text="Packet Count")
@@ -67,12 +68,13 @@ class PacketMonitorUI:
         client_tree.heading("status", text="Status")
 
         # Define column widths
-        client_tree.column("ip", width=150)
-        client_tree.column("port", width=100)
-        client_tree.column("packets", width=100)
+        client_tree.column("username", width=150)
+        client_tree.column("ip", width=120)
+        client_tree.column("port", width=60)
+        client_tree.column("packets", width=80)
         client_tree.column("environment", width=100)
         client_tree.column("account", width=150)  # Set width for account column
-        client_tree.column("status", width=100)
+        client_tree.column("status", width=80)
 
         # Add a scrollbar
         scrollbar = ttk.Scrollbar(client_frame, orient=tk.VERTICAL, command=client_tree.yview)
@@ -127,6 +129,48 @@ class PacketMonitorUI:
                 'protocol_tree': protocol_tree
             }
 
+    def format_account_info(self, account_info):
+        """Format account information for display in the UI"""
+        # Handle empty account info
+        if account_info is None or account_info == {}:
+            return "N/A"
+
+        # If it's already a string, return it
+        if isinstance(account_info, str):
+            return account_info
+
+        # If it's a dictionary, try to extract meaningful info
+        if isinstance(account_info, dict):
+            # Try to get meaningful fields from the dict
+            name = account_info.get('name', '')
+            email = account_info.get('email', '')
+            id = account_info.get('id', '')
+
+            # Return formatted string with available info
+            if name and email:
+                return f"{name} ({email})"
+            elif name:
+                return name
+            elif email:
+                return email
+            elif id:
+                return f"ID: {id}"
+            else:
+                # If none of the above fields exist, find any non-empty values
+                result = []
+                for key, value in account_info.items():
+                    if value and isinstance(value, (str, int, float)):
+                        result.append(f"{key}: {value}")
+
+                if result:
+                    return ", ".join(result)
+
+        # If all else fails, return string representation but limit length
+        result = str(account_info)
+        if len(result) > 30:
+            return result[:27] + "..."
+        return result
+
     def update_client_display(self):
         """Update the client display with current information"""
         try:
@@ -139,21 +183,27 @@ class PacketMonitorUI:
             # Update existing clients and add new ones
             for client_addr, client_info in clients_copy.items():
                 client_id = f"{client_addr[0]}:{client_addr[1]}"
+                username = client_info.get('username', 'Unknown')
 
                 # Check if this client is already in the treeview
                 item_exists = False
                 for item_id in current_items:
-                    if self.client_tree.item(item_id, "values")[0] == client_addr[0] and \
-                            self.client_tree.item(item_id, "values")[1] == str(client_addr[1]):
+                    values = self.client_tree.item(item_id, "values")
+                    if len(values) >= 3 and values[1] == client_addr[0] and values[2] == str(client_addr[1]):
+                        # Format account info properly
+                        account_info = client_info.get('account_info', 'Unknown')
+                        formatted_account = self.format_account_info(account_info)
+
                         # Update existing item
                         self.client_tree.item(
                             item_id,
                             values=(
+                                username,
                                 client_addr[0],
                                 client_addr[1],
                                 client_info['packet_count'],
                                 client_info.get('environment', 'default'),
-                                client_info.get('account_info', 'Unknown'),  # Display account info
+                                formatted_account,
                                 "Connected" if client_info['connected'] else "Disconnected"
                             )
                         )
@@ -167,11 +217,12 @@ class PacketMonitorUI:
                         "",
                         tk.END,
                         values=(
+                            username,
                             client_addr[0],
                             client_addr[1],
                             client_info['packet_count'],
                             client_info.get('environment', 'default'),
-                            client_info.get('account_info', 'Unknown'),  # Display account info
+                            client_info.get('account_info', 'Unknown'),
                             "Connected" if client_info['connected'] else "Disconnected"
                         )
                     )
@@ -236,19 +287,23 @@ class PacketMonitorUI:
 
             # Update existing clients and add new ones for this environment
             for client_addr, client_info in env_clients.items():
+                username = client_info.get('username', 'Unknown')
+
                 # Check if this client is already in the treeview
                 item_exists = False
                 for item_id in current_items:
                     values = client_tree.item(item_id, "values")
-                    if values[0] == client_addr[0] and values[1] == str(client_addr[1]):
+                    if len(values) >= 3 and values[1] == client_addr[0] and values[2] == str(client_addr[1]):
                         # Update existing item
                         client_tree.item(
                             item_id,
                             values=(
+                                username,
                                 client_addr[0],
                                 client_addr[1],
                                 client_info['packet_count'],
                                 env_name,
+                                client_info.get('account_info', 'Unknown'),
                                 "Connected" if client_info['connected'] else "Disconnected"
                             )
                         )
@@ -262,10 +317,12 @@ class PacketMonitorUI:
                         "",
                         tk.END,
                         values=(
+                            username,
                             client_addr[0],
                             client_addr[1],
                             client_info['packet_count'],
                             env_name,
+                            client_info.get('account_info', 'Unknown'),
                             "Connected" if client_info['connected'] else "Disconnected"
                         )
                     )
@@ -319,68 +376,10 @@ class PacketMonitorUI:
                 # Setup the environment tab
                 self.setup_traffic_tab(env_frame, env_name)
 
-    def update_client_display(self):
-        """Update the client display with current information"""
-        try:
-            # Get a copy of the current clients data
-            clients_copy = self.server.get_clients_data()
-
-            # Get all current items in the treeview
-            current_items = set(self.client_tree.get_children())
-
-            # Update existing clients and add new ones
-            for client_addr, client_info in clients_copy.items():
-                client_id = f"{client_addr[0]}:{client_addr[1]}"
-
-                # Check if this client is already in the treeview
-                item_exists = False
-                for item_id in current_items:
-                    if self.client_tree.item(item_id, "values")[0] == client_addr[0] and \
-                            self.client_tree.item(item_id, "values")[1] == str(client_addr[1]):
-                        # Update existing item
-                        self.client_tree.item(
-                            item_id,
-                            values=(
-                                client_addr[0],
-                                client_addr[1],
-                                client_info['packet_count'],
-                                client_info.get('environment', 'default'),
-                                "Connected" if client_info['connected'] else "Disconnected"
-                            )
-                        )
-                        current_items.remove(item_id)
-                        item_exists = True
-                        break
-
-                # Add new item if it doesn't exist
-                if not item_exists:
-                    self.client_tree.insert(
-                        "",
-                        tk.END,
-                        values=(
-                            client_addr[0],
-                            client_addr[1],
-                            client_info['packet_count'],
-                            client_info.get('environment', 'default'),
-                            "Connected" if client_info['connected'] else "Disconnected"
-                        )
-                    )
-
-            # Remove items that no longer exist in the clients dictionary
-            for item_id in current_items:
-                self.client_tree.delete(item_id)
-
-            # Update status bar with total count
-            total_clients = len([c for c in clients_copy.values() if c['connected']])
-            total_packets = sum(c['packet_count'] for c in clients_copy.values())
-            self.status_var.set(f"Active clients: {total_clients} | Total packets: {total_packets}")
-
-        except Exception as e:
-            print(f"Error updating client display: {e}")
-
     def update_protocol_display(self):
         """Update the protocol statistics display"""
         try:
+
             # Get a copy of the current protocol counts
             protocol_counts_copy = self.server.get_protocol_data()
 

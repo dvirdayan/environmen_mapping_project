@@ -104,10 +104,11 @@ class StableSocketClient:
         self.send_thread = None
         self.recv_thread = None
         self.last_ack_time = 0
-        self.packet_count = 0  # This is now the single source of truth for packet count
-        self.local_packet_count = 0  # Initialize local_packet_count here
+        self.packet_count = 0
+        self.local_packet_count = 0
         self.auth_data = None
         self.env_name = None
+        self.username = None  # Add username field
         self.lock = threading.Lock()
         self.send_queue = queue.Queue()
         self.pending_packets = set()
@@ -142,15 +143,19 @@ class StableSocketClient:
         self.recv_thread.daemon = True
         self.recv_thread.start()
 
-    def set_auth(self, env_name, env_password):
+    def set_auth(self, env_name, env_password, username=None):
         """Set authentication data"""
-        self.env_name = env_name  # Set the env_name here
+        self.env_name = env_name
+        self.username = username  # Store username
         if env_name and env_password:
             self.auth_data = {
                 'type': 'auth',
                 'env_name': env_name,
                 'env_password': env_password
             }
+            # Add username to auth data if provided
+            if username:
+                self.auth_data['username'] = username
         else:
             self.auth_data = None
 
@@ -358,6 +363,10 @@ class StableSocketClient:
                 if self.env_name and 'env_name' not in packet_dict:
                     packet_dict['env_name'] = self.env_name
 
+                # Add username to each packet
+                if self.username and 'username' not in packet_dict:
+                    packet_dict['username'] = self.username
+
                 # Always ensure packet has a unique ID
                 if 'packet_id' not in packet_dict:
                     packet_dict['packet_id'] = str(uuid.uuid4())
@@ -370,8 +379,6 @@ class StableSocketClient:
                 serialized = json.dumps(packet_dict) + '\n'
                 self.send_queue.put(serialized)
 
-                # No longer increment packet count here - we'll rely on the server's count
-                # The log message doesn't need to show our count since it may not be accurate yet
                 self.log(f"[CLIENT] Queued packet {packet_dict['packet_id']}")
                 return True
             else:
@@ -636,6 +643,7 @@ class StablePacketCaptureBackend:
         self.server_port = 9007
         self.env_name = None
         self.env_password = None
+        self.username = None  # Add username field
 
         # State tracking
         self.packet_count = 0
@@ -676,7 +684,7 @@ class StablePacketCaptureBackend:
             print(message)
 
     def configure(self, capture_interface=None, server_host=None, server_port=None,
-                  env_name=None, env_password=None):
+                  env_name=None, env_password=None, username=None):
         """Configure the backend with settings from UI"""
         self.capture_interface = capture_interface
 
@@ -688,6 +696,9 @@ class StablePacketCaptureBackend:
 
         self.env_name = env_name
         self.env_password = env_password
+        self.username = username  # Store username
+
+
 
     def start(self):
         """Start packet capture"""
@@ -703,7 +714,8 @@ class StablePacketCaptureBackend:
 
         # Create client
         self.client = StableSocketClient(self.server_host, self.server_port, self.log)
-        self.client.set_auth(self.env_name, self.env_password)
+        # Pass username to set_auth method
+        self.client.set_auth(self.env_name, self.env_password, self.username)
 
         # Register protocol update callback
         self.client.set_protocol_update_callback(self.update_protocol_counts)
@@ -755,6 +767,10 @@ class StablePacketCaptureBackend:
             # Add environment name if available
             if self.env_name:
                 packet_dict['env_name'] = self.env_name
+
+            # Add username if available
+            if self.username:
+                packet_dict['username'] = self.username
 
             # Send to server
             if self.client:
