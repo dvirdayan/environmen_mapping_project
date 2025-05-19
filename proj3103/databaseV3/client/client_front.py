@@ -52,6 +52,37 @@ class PacketCaptureClientUI:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # User information section with grid layout
+        user_info_frame = ttk.LabelFrame(main_frame, text="User Information", padding="10")
+        user_info_frame.pack(fill=tk.X, pady=5)
+
+        # Create a grid layout with 4 columns
+        info_grid = ttk.Frame(user_info_frame)
+        info_grid.pack(fill=tk.X, pady=5, padx=5)
+
+        # Column headers and labels
+        ttk.Label(info_grid, text="Username:", anchor=tk.E).grid(row=0, column=0, sticky=tk.E, padx=(5, 2), pady=2)
+        self.username_var = tk.StringVar(value="Not logged in")
+        ttk.Label(info_grid, textvariable=self.username_var).grid(row=0, column=1, sticky=tk.W, padx=(0, 20), pady=2)
+
+        ttk.Label(info_grid, text="Environment:", anchor=tk.E).grid(row=0, column=2, sticky=tk.E, padx=(5, 2), pady=2)
+        self.env_var = tk.StringVar(value="Not connected")
+        ttk.Label(info_grid, textvariable=self.env_var).grid(row=0, column=3, sticky=tk.W, padx=(0, 5), pady=2)
+
+        ttk.Label(info_grid, text="User ID:", anchor=tk.E).grid(row=1, column=0, sticky=tk.E, padx=(5, 2), pady=2)
+        self.userid_var = tk.StringVar(value="N/A")
+        ttk.Label(info_grid, textvariable=self.userid_var).grid(row=1, column=1, sticky=tk.W, padx=(0, 20), pady=2)
+
+        ttk.Label(info_grid, text="Role:", anchor=tk.E).grid(row=1, column=2, sticky=tk.E, padx=(5, 2), pady=2)
+        self.role_var = tk.StringVar(value="N/A")
+        ttk.Label(info_grid, textvariable=self.role_var).grid(row=1, column=3, sticky=tk.W, padx=(0, 5), pady=2)
+
+        # Set column weights to ensure proper spacing
+        info_grid.columnconfigure(0, weight=1)  # Username label
+        info_grid.columnconfigure(1, weight=2)  # Username value
+        info_grid.columnconfigure(2, weight=1)  # Environment label
+        info_grid.columnconfigure(3, weight=2)  # Environment value
+
         # Create top frame for connection settings
         connection_frame = ttk.LabelFrame(main_frame, text="Connection Settings", padding="10")
         connection_frame.pack(fill=tk.X, pady=5)
@@ -170,9 +201,44 @@ class PacketCaptureClientUI:
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
+    def update_user_info(self, username=None, user_id=None, environment=None, is_admin=False):
+        """Update the user information display"""
+        if username:
+            self.username_var.set(username)
+
+        if user_id:
+            self.userid_var.set(str(user_id))
+
+        if environment:
+            self.env_var.set(environment)
+
+        # Set the role based on admin status
+        self.role_var.set("Admin" if is_admin else "Member")
+
     def set_backend(self, backend):
         """Set the backend reference"""
         self.backend = backend
+
+        # Update user info from backend
+        if hasattr(backend, 'username') and backend.username:
+            account_info = getattr(backend, 'account_info', {}) or {}
+
+            # Extract user information
+            user_id = None
+            is_admin = False
+            env_name = backend.env_name
+
+            if isinstance(account_info, dict):
+                user_id = account_info.get('user_id')
+                is_admin = account_info.get('is_admin', False)
+
+            # Update the UI with user information
+            self.update_user_info(
+                username=backend.username,
+                user_id=user_id,
+                environment=env_name,
+                is_admin=is_admin
+            )
 
     def populate_interfaces(self):
         """Populate the interface dropdown with available network interfaces"""

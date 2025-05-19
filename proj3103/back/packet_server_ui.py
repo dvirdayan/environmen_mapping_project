@@ -131,6 +131,9 @@ class PacketMonitorUI:
 
     def format_account_info(self, account_info):
         """Format account information for display in the UI"""
+        # Debug output
+        print(f"Formatting account_info: {account_info}, type: {type(account_info)}")
+
         # Handle empty account info
         if account_info is None or account_info == {}:
             return "N/A"
@@ -141,7 +144,22 @@ class PacketMonitorUI:
 
         # If it's a dictionary, try to extract meaningful info
         if isinstance(account_info, dict):
-            # Try to get meaningful fields from the dict
+            # First check for user_id and username which is in our structure
+            user_id = account_info.get('user_id')
+            username = account_info.get('username')
+            env = account_info.get('environment')
+
+            if username or user_id:
+                parts = []
+                if username:
+                    parts.append(f"User: {username}")
+                if user_id:
+                    parts.append(f"ID: {user_id}")
+                if env:
+                    parts.append(f"Env: {env}")
+                return " | ".join(parts)
+
+            # Try standard fields as fallback
             name = account_info.get('name', '')
             email = account_info.get('email', '')
             id = account_info.get('id', '')
@@ -159,7 +177,7 @@ class PacketMonitorUI:
                 # If none of the above fields exist, find any non-empty values
                 result = []
                 for key, value in account_info.items():
-                    if value and isinstance(value, (str, int, float)):
+                    if value is not None and value != "":  # Check for any non-empty value
                         result.append(f"{key}: {value}")
 
                 if result:
