@@ -60,9 +60,10 @@ class StablePacketCaptureBackend:
             print(message)
 
     def configure(self, capture_interface=None, server_host=None, server_port=None,
-                  env_name=None, env_password=None, username=None):
+                  env_name=None, env_password=None, username=None, account_info=None):
         """Configure the backend with settings from UI"""
         self.capture_interface = capture_interface
+        self.account_info = account_info  # Add this line
 
         if server_host:
             self.server_host = server_host
@@ -82,6 +83,8 @@ class StablePacketCaptureBackend:
         # Log the configuration
         self.log(f"Backend configured: host={self.server_host}, port={self.server_port}")
         self.log(f"Username: {self.username}, Environment: {self.env_name}")
+        if account_info:
+            self.log(f"Account info: {account_info}")
 
     def start(self):
         """Start packet capture"""
@@ -102,8 +105,8 @@ class StablePacketCaptureBackend:
         self.log(
             f"Setting auth: env_name={self.env_name}, username={self.username}, password={'*****' if self.env_password else 'None'}")
 
-        # Pass all auth data to the client
-        self.client.set_auth(self.env_name, self.env_password, self.username)
+        # Pass all auth data to the client including account_info
+        self.client.set_auth(self.env_name, self.env_password, self.username, self.account_info)
 
         # Register protocol update callback
         self.client.set_protocol_update_callback(self.update_protocol_counts)

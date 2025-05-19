@@ -61,8 +61,8 @@ class StableSocketClient:
         self.recv_thread.daemon = True
         self.recv_thread.start()
 
-    def set_auth(self, env_name, env_password, username=None):
-        """Set authentication data"""
+    def set_auth(self, env_name, env_password, username=None, account_info=None):
+        """Set authentication data with account information"""
         self.env_name = env_name
         self.username = username
         self.env_password = env_password
@@ -87,6 +87,11 @@ class StableSocketClient:
             self.log(f"Auth data set with username: {username}")
         else:
             self.log("Auth data set without username")
+
+        # Add account_info to auth data if provided
+        if account_info:
+            self.auth_data['account_info'] = account_info
+            self.log(f"Auth data includes account information")
 
     def set_protocol_update_callback(self, callback):
         """Set callback function to be called when protocol counts are updated"""
