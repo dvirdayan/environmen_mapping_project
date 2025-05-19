@@ -9,89 +9,6 @@ import uuid
 from datetime import datetime
 
 
-# Create a simple packet processing class that doesn't rely on pyshark initially
-class SimplePacketHandler:
-    def __init__(self, interface, callback=None):
-        self.interface = interface
-        self.callback = callback
-        self.running = False
-        self.thread = None
-        self.packet_queue = queue.Queue(maxsize=1000)  # Limit queue size
-        self.processing_thread = None
-
-    def start(self):
-        """Start a dummy packet generation for testing connection"""
-        self.running = True
-        self.thread = threading.Thread(target=self._generate_test_packets)
-        self.thread.daemon = True
-        self.thread.start()
-
-        # Start processing thread
-        self.processing_thread = threading.Thread(target=self._process_packets)
-        self.processing_thread.daemon = True
-        self.processing_thread.start()
-
-    def stop(self):
-        self.running = False
-        if self.thread:
-            self.thread.join(timeout=1.0)
-        if self.processing_thread:
-            self.processing_thread.join(timeout=1.0)
-
-    def _generate_test_packets(self):
-        """Generate simple test packets to verify connection stability"""
-        counter = 0
-        while self.running:
-            try:
-                counter += 1
-                # Create a simple test packet
-                packet = {
-                    'timestamp': datetime.now().isoformat(),
-                    'protocol': 'TCP',
-                    'highest_layer': 'TCP',
-                    'packet_length': 64,
-                    'source_ip': '192.168.0.1',
-                    'destination_ip': '192.168.0.2',
-                    'source_port': 12345,
-                    'destination_port': 80,
-                    'test_counter': counter
-                }
-
-                # Queue the packet instead of immediately processing
-                try:
-                    # Use put_nowait with a timeout to avoid blocking
-                    self.packet_queue.put(packet, timeout=0.1)
-                except queue.Full:
-                    # Skip packet if queue is full
-                    pass
-
-                # Sleep to avoid flooding
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"Error generating packet: {str(e)}")
-                time.sleep(1)
-
-    def _process_packets(self):
-        """Process packets from the queue"""
-        while self.running:
-            try:
-                # Get packet with timeout
-                try:
-                    packet = self.packet_queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-
-                # Process packet
-                if self.callback:
-                    try:
-                        self.callback(packet)
-                    except Exception as e:
-                        print(f"Error in packet callback: {str(e)}")
-            except Exception as e:
-                print(f"Error processing packet: {str(e)}")
-                time.sleep(0.5)
-
-
 class StableSocketClient:
     def __init__(self, host, port, logger=None):
         self.host = host
@@ -108,6 +25,7 @@ class StableSocketClient:
         self.local_packet_count = 0
         self.auth_data = None
         self.env_name = None
+        self.env_password = None
         self.username = None  # Add username field
         self.lock = threading.Lock()
         self.send_queue = queue.Queue()
@@ -146,18 +64,29 @@ class StableSocketClient:
     def set_auth(self, env_name, env_password, username=None):
         """Set authentication data"""
         self.env_name = env_name
-        self.username = username  # Store username
-        if env_name and env_password:
-            self.auth_data = {
-                'type': 'auth',
-                'env_name': env_name,
-                'env_password': env_password
-            }
-            # Add username to auth data if provided
-            if username:
-                self.auth_data['username'] = username
+        self.username = username
+        self.env_password = env_password
+
+        # Make sure we always have valid auth data
+        # Fallback to defaults if any values are missing
+        if not env_name:
+            env_name = "default"
+        if not env_password:
+            env_password = "default_password"
+
+        # Always create auth data, even with defaults
+        self.auth_data = {
+            'type': 'auth',
+            'env_name': env_name,
+            'env_password': env_password
+        }
+
+        # Add username to auth data if provided
+        if username:
+            self.auth_data['username'] = username
+            self.log(f"Auth data set with username: {username}")
         else:
-            self.auth_data = None
+            self.log("Auth data set without username")
 
     def set_protocol_update_callback(self, callback):
         """Set callback function to be called when protocol counts are updated"""
@@ -192,72 +121,84 @@ class StableSocketClient:
             # Add a small delay to ensure the server is ready for authentication
             time.sleep(0.2)
 
-            # Handle authentication
-            if self.auth_data:
-                try:
-                    # Ensure auth_data format exactly matches what server expects
-                    auth_message = json.dumps(self.auth_data) + '\n'
-                    self.log(f"Sending auth: {auth_message.strip()}")
-                    self.socket.sendall(auth_message.encode('utf-8'))
+            # Handle authentication - always send auth data
+            if not self.auth_data:
+                # Create minimal auth data if none exists
+                self.auth_data = {
+                    'type': 'auth',
+                    'env_name': self.env_name or "default",
+                    'env_password': self.env_password or "default_password"
+                }
+                if self.username:
+                    self.auth_data['username'] = self.username
 
-                    # Wait for response with timeout
-                    response_data = b""
-                    timeout_time = time.time() + 5.0  # 5 second timeout
+            try:
+                # Log what we're sending (mask password)
+                log_data = self.auth_data.copy()
+                if 'env_password' in log_data:
+                    log_data['env_password'] = '******'
+                self.log(f"Sending auth data: {log_data}")
 
-                    while time.time() < timeout_time:
-                        try:
-                            chunk = self.socket.recv(1024)
-                            if not chunk:
-                                break
-                            response_data += chunk
+                # Send auth data
+                auth_message = json.dumps(self.auth_data) + '\n'
+                self.socket.sendall(auth_message.encode('utf-8'))
 
-                            # Check if we have a complete response (ending with newline)
-                            if b'\n' in response_data:
-                                break
-                        except socket.timeout:
+                # Wait for response with timeout
+                response_data = b""
+                timeout_time = time.time() + 5.0  # 5 second timeout
+
+                while time.time() < timeout_time:
+                    try:
+                        chunk = self.socket.recv(1024)
+                        if not chunk:
                             break
+                        response_data += chunk
 
-                    response_text = response_data.decode('utf-8', errors='ignore').strip()
-                    self.log(f"Auth response received ({len(response_text)} bytes): {response_text[:100]}...")
+                        # Check if we have a complete response
+                        if b'\n' in response_data:
+                            break
+                    except socket.timeout:
+                        break
 
-                    # Process response even if it's not JSON
-                    authenticated = False
+                response_text = response_data.decode('utf-8', errors='ignore').strip()
+                self.log(f"Auth response received ({len(response_text)} bytes): {response_text[:100]}...")
 
-                    if "authenticated" in response_text or "success" in response_text:
-                        authenticated = True
-                        self.log("Authentication successful via text matching")
-                    else:
-                        # Try JSON parsing
-                        for line in response_text.split('\n'):
-                            if not line.strip():
-                                continue
-                            try:
-                                response = json.loads(line)
-                                if response.get('status') == 'authenticated':
-                                    authenticated = True
-                                    self.log("Authentication successful via JSON")
-                                    break
-                            except:
-                                pass
+                # Process response
+                authenticated = False
 
-                    if not authenticated:
-                        self.log("Authentication failed")
-                        self.socket.close()
-                        self.socket = None
-                        return False
+                if "authenticated" in response_text or "success" in response_text:
+                    authenticated = True
+                    self.log("Authentication successful via text matching")
+                else:
+                    # Try JSON parsing for each line
+                    for line in response_text.split('\n'):
+                        if not line.strip():
+                            continue
+                        try:
+                            response = json.loads(line)
+                            if response.get('status') == 'authenticated':
+                                authenticated = True
+                                self.log("Authentication successful via JSON")
+                                break
+                        except:
+                            pass
 
-                except socket.timeout:
-                    self.log("Authentication response timeout")
+                if not authenticated:
+                    self.log("Authentication failed")
                     self.socket.close()
                     self.socket = None
                     return False
-                except Exception as e:
-                    self.log(f"Authentication error: {str(e)}")
-                    self.socket.close()
-                    self.socket = None
-                    return False
-            else:
-                self.log("No authentication data to send")
+
+            except socket.timeout:
+                self.log("Authentication response timeout")
+                self.socket.close()
+                self.socket = None
+                return False
+            except Exception as e:
+                self.log(f"Authentication error: {str(e)}")
+                self.socket.close()
+                self.socket = None
+                return False
 
             # Set to non-blocking for normal operation
             self.socket.setblocking(False)
@@ -603,8 +544,6 @@ class StableSocketClient:
                 traceback.print_exc()
                 time.sleep(1)
 
-        # Modification for get_packet_count to use local counter
-
     def get_packet_count(self):
         """Return the current packet count from local tracking"""
         with self.lock:
@@ -628,326 +567,3 @@ class StableSocketClient:
                 percentages[protocol] = 0.0
 
         return percentages
-
-
-class StablePacketCaptureBackend:
-    def __init__(self, ui=None):
-        # Existing initialization code...
-
-        # UI reference for callbacks
-        self.ui = ui
-
-        # Connection settings (will be set by configure method)
-        self.capture_interface = None
-        self.server_host = 'localhost'
-        self.server_port = 9007
-        self.env_name = None
-        self.env_password = None
-        self.username = None  # Add username field
-
-        # State tracking
-        self.packet_count = 0
-        self.running = False
-        self.connected = False
-
-        # Threads
-        self.capture_thread = None
-        self.stats_thread = None
-
-        # Client
-        self.client = None
-
-        # Packet handler
-        self.packet_handler = None
-
-        # Queue for UI updates
-        self.ui_queue = queue.Queue()
-        self.ui_update_thread = None
-
-        # Protocol counts from server
-        self.protocol_counts = {
-            'TCP': 0,
-            'UDP': 0,
-            'HTTP': 0,
-            'HTTPS': 0,
-            'FTP': 0,
-            'SMTP': 0,
-            'Other': 0
-        }
-
-    def log(self, message):
-        """Log a message through the UI"""
-        if self.ui:
-            # Queue UI updates to avoid blocking
-            self.ui_queue.put(("log", message))
-        else:
-            print(message)
-
-    def configure(self, capture_interface=None, server_host=None, server_port=None,
-                  env_name=None, env_password=None, username=None):
-        """Configure the backend with settings from UI"""
-        self.capture_interface = capture_interface
-
-        if server_host:
-            self.server_host = server_host
-
-        if server_port:
-            self.server_port = server_port
-
-        self.env_name = env_name
-        self.env_password = env_password
-        self.username = username  # Store username
-
-
-
-    def start(self):
-        """Start packet capture"""
-        if self.running:
-            return
-
-        self.running = True
-
-        # Start UI update thread
-        self.ui_update_thread = threading.Thread(target=self._process_ui_updates)
-        self.ui_update_thread.daemon = True
-        self.ui_update_thread.start()
-
-        # Create client
-        self.client = StableSocketClient(self.server_host, self.server_port, self.log)
-        # Pass username to set_auth method
-        self.client.set_auth(self.env_name, self.env_password, self.username)
-
-        # Register protocol update callback
-        self.client.set_protocol_update_callback(self.update_protocol_counts)
-
-        # Create packet handler
-        self.packet_handler = SimplePacketHandler(self.capture_interface, self.process_packet)
-
-        # Start the client
-        self.client.start()
-
-        # Start the packet handler
-        self.packet_handler.start()
-
-        # Start stats thread
-        self.stats_thread = threading.Thread(target=self.update_stats)
-        self.stats_thread.daemon = True
-        self.stats_thread.start()
-
-        # Start UI packet processing if UI exists
-        if self.ui:
-            self.ui.start_processing_packets()
-
-    def stop(self):
-        """Stop packet capture"""
-        self.running = False
-
-        if self.packet_handler:
-            self.packet_handler.stop()
-            self.packet_handler = None
-
-        if self.client:
-            self.client.stop()
-            self.client = None
-
-    def update_protocol_counts(self, protocol_counts):
-        """Update protocol counts received from server"""
-        self.protocol_counts = protocol_counts
-
-        # Update UI with protocol counts
-        if self.ui:
-            self.ui_queue.put(("protocol_counts", protocol_counts))
-
-    def process_packet(self, packet_dict):
-        """Process a packet from the handler and send it to the server"""
-        if not self.running:
-            return
-
-        try:
-            # Add environment name if available
-            if self.env_name:
-                packet_dict['env_name'] = self.env_name
-
-            # Add username if available
-            if self.username:
-                packet_dict['username'] = self.username
-
-            # Send to server
-            if self.client:
-                self.client.send_packet(packet_dict)
-
-            # Update UI (through queue)
-            if self.ui:
-                self.ui_queue.put(("packet", packet_dict))
-        except Exception as e:
-            self.log(f"Error processing packet: {str(e)}")
-
-    def _process_ui_updates(self):
-        """Process UI updates from queue to avoid blocking"""
-        while self.running:
-            try:
-                # Get update with timeout
-                try:
-                    update_type, data = self.ui_queue.get(timeout=0.5)
-                except queue.Empty:
-                    continue
-
-                # Process update
-                if update_type == "log" and self.ui:
-                    try:
-                        self.ui.log_message(data)
-                    except Exception as e:
-                        print(f"Error updating UI log: {str(e)}")
-
-                elif update_type == "packet" and self.ui:
-                    try:
-                        self.ui.process_packet(data)
-                    except Exception as e:
-                        print(f"Error updating UI with packet: {str(e)}")
-
-                elif update_type == "packet_count" and self.ui:
-                    try:
-                        self.ui.update_packet_count(data)
-                    except Exception as e:
-                        print(f"Error updating packet count: {str(e)}")
-
-                elif update_type == "connection" and self.ui:
-                    try:
-                        self.ui.update_connection_status(data)
-                    except Exception as e:
-                        print(f"Error updating connection status: {str(e)}")
-
-                elif update_type == "protocol_counts" and self.ui:
-                    try:
-                        # Make sure UI has the update_protocol_counts method
-                        if hasattr(self.ui, 'update_protocol_counts'):
-                            self.ui.update_protocol_counts(data)
-                        else:
-                            print("UI doesn't have update_protocol_counts method")
-                    except Exception as e:
-                        print(f"Error updating protocol counts: {str(e)}")
-
-            except Exception as e:
-                print(f"Error processing UI update: {str(e)}")
-                time.sleep(0.5)
-
-    def update_stats(self):
-        """Update statistics periodically"""
-        while self.running:
-            try:
-                if self.client:
-                    # Get the packet count directly from client
-                    self.packet_count = self.client.packet_count
-                    self.connected = self.client.connected
-
-                    # Get protocol counts from client
-                    if hasattr(self.client, 'get_protocol_counts'):
-                        protocol_counts = self.client.get_protocol_counts()
-                        self.protocol_counts = protocol_counts
-
-                        # Update UI with protocol counts
-                        if self.ui:
-                            self.ui_queue.put(("protocol_counts", protocol_counts))
-
-                # Queue UI updates
-                self.ui_queue.put(("packet_count", self.packet_count))
-                self.ui_queue.put(("connection", self.connected))
-
-                time.sleep(1)
-            except Exception as e:
-                self.log(f"Error updating stats: {str(e)}")
-                time.sleep(1)
-
-
-# After verifying this works, we can add real packet capture
-# This function would be called to upgrade from test packets to real capture
-def upgrade_to_real_capture(backend):
-    """Upgrade from test packets to real capture once connection is stable"""
-    if backend.packet_handler:
-        backend.packet_handler.stop()
-
-    # Now implement real packet capture using either PyShark or Scapy
-    # For example, using Scapy:
-    try:
-        from scapy.all import sniff
-
-        class ScapyPacketHandler:
-            def __init__(self, interface, callback=None):
-                self.interface = interface
-                self.callback = callback
-                self.running = False
-                self.thread = None
-
-            def start(self):
-                self.running = True
-                self.thread = threading.Thread(target=self._capture_packets)
-                self.thread.daemon = True
-                self.thread.start()
-
-            def stop(self):
-                self.running = False
-                if self.thread:
-                    self.thread.join(timeout=1.0)
-
-            def _capture_packets(self):
-                def packet_handler(packet):
-                    if not self.running:
-                        return
-
-                    # Convert Scapy packet to dict
-                    packet_dict = self._packet_to_dict(packet)
-
-                    if self.callback:
-                        self.callback(packet_dict)
-
-                backend.log(f"Starting real packet capture on interface {self.interface}")
-                try:
-                    sniff(iface=self.interface, prn=packet_handler, store=0, stop_filter=lambda _: not self.running)
-                except Exception as e:
-                    backend.log(f"Capture error: {e}")
-
-            def _packet_to_dict(self, packet):
-                """Convert a Scapy packet to dictionary"""
-                packet_dict = {
-                    'timestamp': datetime.now().isoformat(),
-                    'protocol': 'UNKNOWN',
-                    'highest_layer': 'UNKNOWN',
-                    'packet_length': len(packet),
-                    'source_ip': None,
-                    'destination_ip': None,
-                    'source_port': None,
-                    'destination_port': None
-                }
-
-                # Extract IP info
-                if 'IP' in packet:
-                    packet_dict['source_ip'] = packet['IP'].src
-                    packet_dict['destination_ip'] = packet['IP'].dst
-                    packet_dict['protocol'] = 'IP'
-
-                # Extract TCP/UDP info
-                if 'TCP' in packet:
-                    packet_dict['source_port'] = packet['TCP'].sport
-                    packet_dict['destination_port'] = packet['TCP'].dport
-                    packet_dict['protocol'] = 'TCP'
-                    packet_dict['highest_layer'] = 'TCP'
-                elif 'UDP' in packet:
-                    packet_dict['source_port'] = packet['UDP'].sport
-                    packet_dict['destination_port'] = packet['UDP'].dport
-                    packet_dict['protocol'] = 'UDP'
-                    packet_dict['highest_layer'] = 'UDP'
-
-                # Check for higher-level protocols
-                if 'HTTP' in packet:
-                    packet_dict['highest_layer'] = 'HTTP'
-                elif 'DNS' in packet:
-                    packet_dict['highest_layer'] = 'DNS'
-
-                return packet_dict
-
-        # Create and start the Scapy handler
-        backend.packet_handler = ScapyPacketHandler(backend.capture_interface, backend.process_packet)
-        backend.packet_handler.start()
-
-    except ImportError:
-        backend.log("Scapy not available. Using dummy packets for testing.")

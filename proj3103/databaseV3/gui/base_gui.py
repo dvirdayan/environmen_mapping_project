@@ -1,7 +1,5 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
-import threading
-import subprocess
 import json
 import os
 
@@ -81,20 +79,27 @@ class CredentialManagerGUI:
             self.root.unbind('<Return>')  # Unbind the Enter key
             self.show_main_dashboard()
 
-            # Save config for client - now only when button is clicked
-            self.save_user_config(username)
+            # Always save config file on login
+            config_path = self.save_user_config(username)
+            messagebox.showinfo("Login Successful",
+                                f"Welcome {username}! Your configuration has been saved for client use.")
         else:
             messagebox.showerror("Login Failed", "Invalid username or password.")
 
     def save_user_config(self, username):
-        """Save the current username to a temporary config file for the client."""
-        config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client")
+        """Save the current username and environment info to a config file for the client."""
+        # Path to save config file - create directory structure if needed
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        # Go up 2 levels from gui directory to reach database directory
+        parent_dir = os.path.dirname(os.path.dirname(base_dir))
+        # Then down to client directory
+        config_dir = os.path.join(parent_dir, "client")
         os.makedirs(config_dir, exist_ok=True)
 
         config_path = os.path.join(config_dir, "user_config.json")
 
         # Get user environments from database
-        environments = self.db.get_environments(self.current_user_id)
+        environments = self.db.get_user_environments(self.current_user_id)
 
         # Create config with username and available environments
         config = {
@@ -107,19 +112,28 @@ class CredentialManagerGUI:
         with open(config_path, "w") as f:
             json.dump(config, f)
 
+        print(f"Config saved to: {config_path}")
+        print(f"Config contents: {config}")
+
         return config_path
 
     def start_client(self):
-        """Start the packet capture client in a separate process with username."""
+        """Start the packet capture client in a separate process with username and environment."""
         try:
-            # Config should already be saved during login
-            config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "client", "user_config.json")
+            # Save the latest config with username and environments
+            config_path = self.save_user_config(self.current_username)
+
+            import subprocess
+            client_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client",
+                                       "client_main.py")
 
             # Start client process with config path as argument
-            subprocess.Popen(["python", "client/client_main.py", "--config", config_path])
+            subprocess.Popen(["python", client_path, "--config", config_path])
 
-            messagebox.showinfo("Client Started",
-                                f"The packet capture client has been started for user '{self.current_username}'.")
+            messagebox.showinfo(
+                "Client Started",
+                f"The packet capture client has been started for user '{self.current_username}'."
+            )
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start client: {str(e)}")
 

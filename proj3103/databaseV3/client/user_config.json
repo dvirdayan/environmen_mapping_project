@@ -1,1 +1,1 @@
-{"username": "DD", "user_id": 2, "environments": [{"env_name": "C1", "env_password": "CCC"}]}
+{"username": "DD", "user_id": 2, "environments": [{"env_name": "C1", "env_password": "CCC", "is_admin": false}]}

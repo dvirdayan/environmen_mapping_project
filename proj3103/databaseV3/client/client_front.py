@@ -76,25 +76,6 @@ class PacketCaptureClientUI:
         ttk.Entry(connection_frame, textvariable=self.server_port_var, width=10).grid(row=1, column=3, sticky=tk.W,
                                                                                       padx=5, pady=5)
 
-        # Environment settings
-        env_frame = ttk.LabelFrame(main_frame, text="Environment Settings", padding="10")
-        env_frame.pack(fill=tk.X, pady=5)
-
-        self.use_env_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(env_frame, text="Use Environment Authentication", variable=self.use_env_var,
-                        command=self.toggle_env_fields).grid(row=0, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
-
-        ttk.Label(env_frame, text="Environment Name:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
-        self.env_name_var = tk.StringVar()
-        self.env_name_entry = ttk.Entry(env_frame, textvariable=self.env_name_var, width=30, state="disabled")
-        self.env_name_entry.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-
-        ttk.Label(env_frame, text="Environment Password:").grid(row=2, column=0, sticky=tk.W, padx=5, pady=5)
-        self.env_password_var = tk.StringVar()
-        self.env_password_entry = ttk.Entry(env_frame, textvariable=self.env_password_var, width=30, show="*",
-                                            state="disabled")
-        self.env_password_entry.grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
-
         # Control buttons
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=10)
@@ -204,12 +185,6 @@ class PacketCaptureClientUI:
         except Exception as e:
             self.log_message(f"Error listing interfaces: {e}")
 
-    def toggle_env_fields(self):
-        """Enable or disable environment fields based on checkbox state"""
-        state = "normal" if self.use_env_var.get() else "disabled"
-        self.env_name_entry.config(state=state)
-        self.env_password_entry.config(state=state)
-
     def start_capture(self):
         """Start packet capture"""
         if self.capture_running or not self.backend:
@@ -225,16 +200,6 @@ class PacketCaptureClientUI:
             messagebox.showerror("Error", "Please select a network interface")
             return
 
-        # Get environment settings if enabled
-        env_name = None
-        env_password = None
-        if self.use_env_var.get():
-            env_name = self.env_name_var.get()
-            env_password = self.env_password_var.get()
-            if not env_name or not env_password:
-                messagebox.showerror("Error", "Please enter both environment name and password")
-                return
-
         # Update UI state
         self.start_button.config(state="disabled")
         self.stop_button.config(state="normal")
@@ -245,9 +210,8 @@ class PacketCaptureClientUI:
         self.backend.configure(
             capture_interface=interface,
             server_host=server_host,
-            server_port=server_port,
-            env_name=env_name,
-            env_password=env_password
+            server_port=server_port
+            # Note: keep existing username and env data that was loaded from config
         )
         self.backend.start()
 
@@ -393,6 +357,7 @@ class PacketCaptureClientUI:
 
             except Exception as e:
                 print(f"Error consuming log: {e}")
+                import traceback
                 traceback.print_exc()
 
             # Schedule next check
