@@ -433,6 +433,7 @@ class StableSocketClient:
     def _recv_loop(self):
         """Background thread for receiving responses"""
         buffer = ""
+        last_packet_count_log = 0
 
         while self.running:
             try:
@@ -457,6 +458,7 @@ class StableSocketClient:
                             except:
                                 pass
                             self.socket = None
+                    self.log("Socket selection error, connection marked as closed")
                     continue
 
                 # Check for exceptional conditions
@@ -511,39 +513,92 @@ class StableSocketClient:
                             text_data = data.decode('utf-8')
                             buffer += text_data
 
+                            # Log raw data for debugging (truncated to avoid spamming logs)
+                            if len(text_data) > 200:
+                                self.log(f"Received data: {text_data[:100]}...{text_data[-100:]}")
+                            else:
+                                self.log(f"Received data: {text_data}")
+
                             # Process complete messages
                             while '\n' in buffer:
                                 line, buffer = buffer.split('\n', 1)
-                                if line.strip():  # Skip empty lines
-                                    try:
-                                        response = json.loads(line)
-                                        msg_type = response.get('type', 'unknown')
-                                        self.log(f"Received: {msg_type}")
+                                if not line.strip():  # Skip empty lines
+                                    continue
 
-                                        if msg_type == 'ack':
-                                            self.last_ack_time = time.time()
+                                try:
+                                    response = json.loads(line)
+                                    msg_type = response.get('type', 'unknown')
+                                    self.log(f"Received message type: {msg_type}")
 
-                                            # Get protocol counts if available (still useful)
-                                            if 'protocol_counts' in response:
-                                                self.protocol_counts = response['protocol_counts']
-                                                if self.protocol_update_callback:
-                                                    self.protocol_update_callback(self.protocol_counts)
+                                    if msg_type == 'ack':
+                                        # Update last acknowledgment time
+                                        self.last_ack_time = time.time()
 
-                                        elif msg_type == 'stats':
-                                            # Update protocol counts from stats message
-                                            if 'protocol_counts' in response:
-                                                self.protocol_counts = response['protocol_counts']
-                                                if self.protocol_update_callback:
-                                                    self.protocol_update_callback(self.protocol_counts)
+                                        # Increment packet count when ACK received
+                                        with self.lock:
+                                            self.packet_count += 1
+                                            self.local_packet_count += 1
 
-                                    except json.JSONDecodeError:
-                                        self.log(f"Invalid JSON: {line[:30]}...")
+                                            # Log packet count periodically to avoid log spam
+                                            if self.packet_count - last_packet_count_log >= 10:
+                                                self.log(f"Packet count updated to {self.packet_count}")
+                                                last_packet_count_log = self.packet_count
+
+                                        # Get protocol counts if available
+                                        if 'protocol_counts' in response:
+                                            self.protocol_counts = response['protocol_counts']
+                                            if self.protocol_update_callback:
+                                                self.protocol_update_callback(self.protocol_counts)
+
+                                    elif msg_type == 'stats':
+                                        self.log("Received stats update from server")
+                                        # Update protocol counts from stats message
+                                        if 'protocol_counts' in response:
+                                            old_counts = self.protocol_counts.copy()
+                                            self.protocol_counts = response['protocol_counts']
+
+                                            # Calculate total packets from protocol counts
+                                            new_total = sum(self.protocol_counts.values())
+                                            old_total = sum(old_counts.values())
+
+                                            # Log if there's a significant change
+                                            if abs(new_total - old_total) > 5:
+                                                self.log(f"Protocol counts updated: {old_total} → {new_total}")
+
+                                            # Update the UI if callback is registered
+                                            if self.protocol_update_callback:
+                                                self.protocol_update_callback(self.protocol_counts)
+
+                                        # If stats message contains a packet_count, sync to it
+                                        if 'packet_count' in response:
+                                            server_count = response.get('packet_count', 0)
+                                            with self.lock:
+                                                if abs(server_count - self.packet_count) > 5:
+                                                    self.log(
+                                                        f"Syncing packet count with server: {self.packet_count} → {server_count}")
+                                                    self.packet_count = server_count
+
+                                    elif msg_type == 'authenticated':
+                                        self.log(f"Authentication confirmed: {response.get('message', '')}")
+
+                                    elif msg_type == 'error':
+                                        self.log(f"Error from server: {response.get('message', 'Unknown error')}")
+
+                                    else:
+                                        self.log(f"Unhandled message type: {msg_type}")
+
+                                except json.JSONDecodeError as e:
+                                    self.log(f"Invalid JSON: {line[:30]}... - Error: {str(e)}")
+
                         except UnicodeDecodeError:
                             self.log("Received non-UTF8 data, ignoring")
                             buffer = ""  # Clear buffer on decode error
+
                     except Exception as e:
                         self.log(f"Error processing received data: {str(e)}")
+                        traceback.print_exc()
                         time.sleep(0.1)
+
             except Exception as e:
                 self.log(f"Unexpected error in receive loop: {str(e)}")
                 traceback.print_exc()

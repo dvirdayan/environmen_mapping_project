@@ -219,26 +219,38 @@ class PacketCaptureClientUI:
         """Set the backend reference"""
         self.backend = backend
 
+        # Debug print
+        print("Setting backend with data:")
+        print(f"Username: {getattr(backend, 'username', 'Not set')}")
+        print(f"Account info: {getattr(backend, 'account_info', 'Not set')}")
+
         # Update user info from backend
         if hasattr(backend, 'username') and backend.username:
             account_info = getattr(backend, 'account_info', {}) or {}
 
+            # Debug print
+            print(f"Extracted account_info: {account_info}")
+
             # Extract user information
             user_id = None
             is_admin = False
-            env_name = backend.env_name
+            env_name = getattr(backend, 'env_name', 'Not set')
 
             if isinstance(account_info, dict):
                 user_id = account_info.get('user_id')
                 is_admin = account_info.get('is_admin', False)
+                print(f"Extracted user_id: {user_id}, is_admin: {is_admin}")
 
             # Update the UI with user information
+            self.log_message(f"Updating UI with: username={backend.username}, user_id={user_id}, env={env_name}")
             self.update_user_info(
                 username=backend.username,
                 user_id=user_id,
                 environment=env_name,
                 is_admin=is_admin
             )
+        else:
+            self.log_message("No username found in backend when setting backend")
 
     def populate_interfaces(self):
         """Populate the interface dropdown with available network interfaces"""
@@ -271,6 +283,24 @@ class PacketCaptureClientUI:
         self.stop_button.config(state="normal")
         self.capture_running = True
         self.update_status_indicator("Connecting...")
+
+        # Update environment information in the UI again to ensure it's displayed
+        if hasattr(self.backend, 'username') and self.backend.username:
+            account_info = getattr(self.backend, 'account_info', {}) or {}
+            user_id = None
+            is_admin = False
+
+            if isinstance(account_info, dict):
+                user_id = account_info.get('user_id')
+                is_admin = account_info.get('is_admin', False)
+
+            self.log_message(f"Starting capture as: {self.backend.username} in environment: {self.backend.env_name}")
+            self.update_user_info(
+                username=self.backend.username,
+                user_id=user_id,
+                environment=self.backend.env_name,
+                is_admin=is_admin
+            )
 
         # Configure and start the backend
         self.backend.configure(

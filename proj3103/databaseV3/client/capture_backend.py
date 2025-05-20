@@ -62,29 +62,33 @@ class StablePacketCaptureBackend:
     def configure(self, capture_interface=None, server_host=None, server_port=None,
                   env_name=None, env_password=None, username=None, account_info=None):
         """Configure the backend with settings from UI"""
-        self.capture_interface = capture_interface
-        self.account_info = account_info  # Add this line
+        if capture_interface is not None:
+            self.capture_interface = capture_interface
 
-        if server_host:
+        if server_host is not None:
             self.server_host = server_host
 
-        if server_port:
+        if server_port is not None:
             self.server_port = server_port
 
-        if env_name:
+        if env_name is not None:
             self.env_name = env_name
 
-        if env_password:
+        if env_password is not None:
             self.env_password = env_password
 
-        if username:
+        if username is not None:
             self.username = username
+
+        # Only update account_info if it's actually provided
+        if account_info is not None:
+            self.account_info = account_info
 
         # Log the configuration
         self.log(f"Backend configured: host={self.server_host}, port={self.server_port}")
         self.log(f"Username: {self.username}, Environment: {self.env_name}")
-        if account_info:
-            self.log(f"Account info: {account_info}")
+        if hasattr(self, 'account_info') and self.account_info:
+            self.log(f"Account info: {self.account_info}")
 
     def start(self):
         """Start packet capture"""

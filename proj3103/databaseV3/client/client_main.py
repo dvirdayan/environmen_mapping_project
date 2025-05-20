@@ -99,11 +99,14 @@ def main():
         capture_interface=None,  # Will be selected in UI
         server_host=server_host,
         server_port=server_port,
-        username=username,
+        username=username,  # Make sure username is passed correctly
         env_name=env_name,
         env_password=env_password,
-        account_info=account_info  # Pass the account_info to the backend
+        account_info=account_info  # Make sure account_info is passed correctly
     )
+
+    # Log the configuration details
+    print(f"Configured backend with: username={username}, env={env_name}, account_info={account_info}")
 
     # Connect UI and backend
     ui.set_backend(backend)

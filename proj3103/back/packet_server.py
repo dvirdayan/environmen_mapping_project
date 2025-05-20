@@ -67,6 +67,17 @@ class PacketServer:
         while self.running:
             time.sleep(5)  # Send stats every 5 seconds
 
+            # Clear old packet IDs to prevent memory issues
+            # Only keep IDs from the last hour
+            current_time = time.time()
+            if current_time - self.last_packet_id_cleanup > 3600:
+                with self.packet_id_lock:
+                    if len(self.received_packet_ids) > 10000:
+                        print(f"Clearing packet ID cache. Size before: {len(self.received_packet_ids)}")
+                        # This is a simplistic approach - ideally you'd use timestamps
+                        self.received_packet_ids = set(list(self.received_packet_ids)[-5000:])
+                        print(f"New packet ID cache size: {len(self.received_packet_ids)}")
+                self.last_packet_id_cleanup = current_time
             # Get a list of connected clients
             connected_clients = {}
             with self.clients_lock:
@@ -192,6 +203,7 @@ class PacketServer:
                     return False
                 self.received_packet_ids.add(packet_id)
 
+            # Add debugging to track packet counts
             print(f"[SERVER] Processing new packet_id from user {username}: {packet_id}")
 
             # Determine environment
