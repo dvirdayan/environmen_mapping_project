@@ -61,6 +61,7 @@ class PacketServer:
 
         self.received_packet_ids = set()
         self.packet_id_lock = threading.Lock()
+        self.last_packet_id_cleanup = time.time()
 
     def _send_stats_periodically(self):
         """Send protocol statistics to all connected clients periodically"""
@@ -70,7 +71,7 @@ class PacketServer:
             # Clear old packet IDs to prevent memory issues
             # Only keep IDs from the last hour
             current_time = time.time()
-            if current_time - self.last_packet_id_cleanup > 3600:
+            if current_time - self.last_packet_id_cleanup > 3600:  # 1 hour
                 with self.packet_id_lock:
                     if len(self.received_packet_ids) > 10000:
                         print(f"Clearing packet ID cache. Size before: {len(self.received_packet_ids)}")
