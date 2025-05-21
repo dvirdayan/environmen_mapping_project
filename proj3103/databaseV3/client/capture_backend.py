@@ -8,8 +8,6 @@ from packet_handler import SimplePacketHandler
 
 class StablePacketCaptureBackend:
     def __init__(self, ui=None):
-        # Existing initialization code...
-
         # UI reference for callbacks
         self.ui = ui
 
@@ -17,9 +15,9 @@ class StablePacketCaptureBackend:
         self.capture_interface = None
         self.server_host = 'localhost'
         self.server_port = 9007
-        self.env_name = None
-        self.env_password = None
+        self.environments = []  # List of environment dictionaries
         self.username = None  # Add username field
+        self.account_info = None  # Account info
 
         # State tracking
         self.packet_count = 0
@@ -40,7 +38,7 @@ class StablePacketCaptureBackend:
         self.ui_queue = queue.Queue()
         self.ui_update_thread = None
 
-        # Protocol counts from server
+        # Protocol counts from server (global and per environment)
         self.protocol_counts = {
             'TCP': 0,
             'UDP': 0,
@@ -51,6 +49,9 @@ class StablePacketCaptureBackend:
             'Other': 0
         }
 
+        # Environment-specific protocol counts
+        self.environment_protocol_counts = {}
+
     def log(self, message):
         """Log a message through the UI"""
         if self.ui:
@@ -60,7 +61,8 @@ class StablePacketCaptureBackend:
             print(message)
 
     def configure(self, capture_interface=None, server_host=None, server_port=None,
-                  env_name=None, env_password=None, username=None, account_info=None):
+                  environments=None, username=None, account_info=None,
+                  distribution_strategy=None):
         """Configure the backend with settings from UI"""
         if capture_interface is not None:
             self.capture_interface = capture_interface
@@ -71,24 +73,35 @@ class StablePacketCaptureBackend:
         if server_port is not None:
             self.server_port = server_port
 
-        if env_name is not None:
-            self.env_name = env_name
+        if environments is not None:
+            if isinstance(environments, list):
+                self.environments = environments
+            else:
+                # Single environment support for backward compatibility
+                env_name = getattr(environments, 'env_name', environments)
+                env_password = getattr(environments, 'env_password', None)
+                self.environments = [{'env_name': env_name, 'env_password': env_password}]
 
-        if env_password is not None:
-            self.env_password = env_password
+            # Initialize environment protocol counts
+            for env in self.environments:
+                env_name = env.get('env_name')
+                if env_name and env_name not in self.environment_protocol_counts:
+                    self.environment_protocol_counts[env_name] = {
+                        'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
+                    }
 
         if username is not None:
             self.username = username
 
-        # Only update account_info if it's actually provided
         if account_info is not None:
             self.account_info = account_info
 
         # Log the configuration
         self.log(f"Backend configured: host={self.server_host}, port={self.server_port}")
-        self.log(f"Username: {self.username}, Environment: {self.env_name}")
-        if hasattr(self, 'account_info') and self.account_info:
+        self.log(f"Username: {self.username}, Environments: {[env.get('env_name') for env in self.environments]}")
+        if self.account_info:
             self.log(f"Account info: {self.account_info}")
+        self.log("Packets will be sent to all environments automatically")
 
     def start(self):
         """Start packet capture"""
@@ -106,11 +119,11 @@ class StablePacketCaptureBackend:
         self.client = StableSocketClient(self.server_host, self.server_port, self.log)
 
         # Log the credentials being used (obscure password)
-        self.log(
-            f"Setting auth: env_name={self.env_name}, username={self.username}, password={'*****' if self.env_password else 'None'}")
+        env_names = [env.get('env_name') for env in self.environments]
+        self.log(f"Setting auth for environments: {env_names} as user: {self.username}")
 
         # Pass all auth data to the client including account_info
-        self.client.set_auth(self.env_name, self.env_password, self.username, self.account_info)
+        self.client.set_auth(self.environments, self.username, self.account_info)
 
         # Register protocol update callback
         self.client.set_protocol_update_callback(self.update_protocol_counts)
@@ -145,13 +158,23 @@ class StablePacketCaptureBackend:
             self.client.stop()
             self.client = None
 
-    def update_protocol_counts(self, protocol_counts):
-        """Update protocol counts received from server"""
+    def update_protocol_counts(self, protocol_counts, environment=None):
+        """Update protocol counts received from server
+
+        Args:
+            protocol_counts: Dictionary of protocol counts
+            environment: Optional environment name these counts belong to
+        """
+        # Update global counts
         self.protocol_counts = protocol_counts
+
+        # If environment is specified, update environment-specific counts
+        if environment and environment in self.environment_protocol_counts:
+            self.environment_protocol_counts[environment] = protocol_counts
 
         # Update UI with protocol counts
         if self.ui:
-            self.ui_queue.put(("protocol_counts", protocol_counts))
+            self.ui_queue.put(("protocol_counts", protocol_counts, environment))
 
     def process_packet(self, packet_dict):
         """Process a packet from the handler and send it to the server"""
@@ -159,21 +182,25 @@ class StablePacketCaptureBackend:
             return
 
         try:
-            # Add environment name if available
-            if self.env_name:
-                packet_dict['env_name'] = self.env_name
+            # Get all available environment names - always send to all environments
+            all_envs = [env.get('env_name') for env in self.environments]
+
+            if not all_envs:
+                self.log("No environments available to send packet")
+                return
 
             # Add username if available
             if self.username:
                 packet_dict['username'] = self.username
 
-            # Send to server
+            # Send to server with all environments
             if self.client:
                 self.client.send_packet(packet_dict)
 
             # Update UI (through queue)
             if self.ui:
-                self.ui_queue.put(("packet", packet_dict))
+                self.ui_queue.put(("packet", packet_dict, all_envs))
+
         except Exception as e:
             self.log(f"Error processing packet: {str(e)}")
 
@@ -183,7 +210,12 @@ class StablePacketCaptureBackend:
             try:
                 # Get update with timeout
                 try:
-                    update_type, data = self.ui_queue.get(timeout=0.5)
+                    update = self.ui_queue.get(timeout=0.5)
+                    if len(update) == 2:
+                        update_type, data = update
+                        additional = None
+                    else:
+                        update_type, data, additional = update
                 except queue.Empty:
                     continue
 
@@ -196,7 +228,12 @@ class StablePacketCaptureBackend:
 
                 elif update_type == "packet" and self.ui:
                     try:
-                        self.ui.process_packet(data)
+                        if hasattr(self.ui, 'process_packet_with_environments'):
+                            # Use the new method that supports environments
+                            self.ui.process_packet_with_environments(data, additional)
+                        else:
+                            # Fallback to the old method
+                            self.ui.process_packet(data)
                     except Exception as e:
                         print(f"Error updating UI with packet: {str(e)}")
 
@@ -215,10 +252,14 @@ class StablePacketCaptureBackend:
                 elif update_type == "protocol_counts" and self.ui:
                     try:
                         # Make sure UI has the update_protocol_counts method
-                        if hasattr(self.ui, 'update_protocol_counts'):
+                        if hasattr(self.ui, 'update_protocol_counts_for_env'):
+                            # Use the new method that supports environments
+                            self.ui.update_protocol_counts_for_env(data, additional)
+                        elif hasattr(self.ui, 'update_protocol_counts'):
+                            # Fallback to the old method
                             self.ui.update_protocol_counts(data)
                         else:
-                            print("UI doesn't have update_protocol_counts method")
+                            print("UI doesn't have protocol count update methods")
                     except Exception as e:
                         print(f"Error updating protocol counts: {str(e)}")
 
@@ -237,12 +278,22 @@ class StablePacketCaptureBackend:
 
                     # Get protocol counts from client
                     if hasattr(self.client, 'get_protocol_counts'):
+                        # Get global protocol counts
                         protocol_counts = self.client.get_protocol_counts()
                         self.protocol_counts = protocol_counts
 
                         # Update UI with protocol counts
                         if self.ui:
-                            self.ui_queue.put(("protocol_counts", protocol_counts))
+                            self.ui_queue.put(("protocol_counts", protocol_counts, None))
+
+                        # Get environment-specific counts
+                        for env_name in self.environment_protocol_counts.keys():
+                            env_counts = self.client.get_protocol_counts(env_name)
+                            if env_counts:
+                                self.environment_protocol_counts[env_name] = env_counts
+                                # Update UI with environment-specific counts
+                                if self.ui:
+                                    self.ui_queue.put(("protocol_counts", env_counts, env_name))
 
                 # Queue UI updates
                 self.ui_queue.put(("packet_count", self.packet_count))
@@ -252,3 +303,7 @@ class StablePacketCaptureBackend:
             except Exception as e:
                 self.log(f"Error updating stats: {str(e)}")
                 time.sleep(1)
+
+    def get_environments(self):
+        """Return the list of configured environments"""
+        return [env.get('env_name') for env in self.environments]

@@ -79,6 +79,7 @@ class PacketServer:
                         self.received_packet_ids = set(list(self.received_packet_ids)[-5000:])
                         print(f"New packet ID cache size: {len(self.received_packet_ids)}")
                 self.last_packet_id_cleanup = current_time
+
             # Get a list of connected clients
             connected_clients = {}
             with self.clients_lock:
@@ -90,24 +91,18 @@ class PacketServer:
             if not connected_clients:
                 continue
 
-            # Send stats to each connected client
+            # Send global stats to each connected client
             for addr, client_info in connected_clients.items():
                 try:
-                    # Get environment for this client
-                    env_name = client_info.get('environment', 'default')
+                    # Get global protocol counts
+                    global_protocol_counts = {}
+                    with self.protocol_lock:
+                        global_protocol_counts = self.protocol_counts.copy()
 
-                    # Get protocol counts for this environment
-                    env_protocol_counts = {}
-                    with self.environment_lock:
-                        if env_name in self.environments:
-                            env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
-                        else:
-                            env_protocol_counts = self.protocol_counts.copy()
-
-                    # Create stats message
-                    stats_message = {
+                    # Create global stats message
+                    global_stats_message = {
                         'type': 'stats',
-                        'protocol_counts': env_protocol_counts,
+                        'protocol_counts': global_protocol_counts,
                         'timestamp': datetime.now().isoformat()
                     }
 
@@ -115,13 +110,40 @@ class PacketServer:
                     socket_conn = client_info.get('socket')
                     if socket_conn:
                         try:
-                            socket_conn.sendall((json.dumps(stats_message) + '\n').encode('utf-8'))
+                            socket_conn.sendall((json.dumps(global_stats_message) + '\n').encode('utf-8'))
                         except Exception as e:
-                            print(f"Error sending stats to {client_info['username']}: {e}")
+                            print(f"Error sending global stats to {client_info['username']}: {e}")
                             # Mark client as disconnected if we can't send to it
                             with self.clients_lock:
                                 if client_info['username'] in self.clients_by_username:
                                     self.clients_by_username[client_info['username']]['connected'] = False
+
+                    # Now send environment-specific stats for each client's environments
+                    client_environments = client_info.get('environments', [])
+                    for env_name in client_environments:
+                        # Get protocol counts for this environment
+                        env_protocol_counts = {}
+                        with self.environment_lock:
+                            if env_name in self.environments:
+                                env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+                            else:
+                                continue  # Skip if no data for this environment
+
+                        # Create environment-specific stats message
+                        env_stats_message = {
+                            'type': 'stats',
+                            'environment': env_name,
+                            'protocol_counts': env_protocol_counts,
+                            'timestamp': datetime.now().isoformat()
+                        }
+
+                        # Send environment stats
+                        socket_conn = client_info.get('socket')
+                        if socket_conn:
+                            try:
+                                socket_conn.sendall((json.dumps(env_stats_message) + '\n').encode('utf-8'))
+                            except Exception as e:
+                                print(f"Error sending {env_name} stats to {client_info['username']}: {e}")
                 except Exception as e:
                     print(f"Error preparing stats for {client_info['username']}: {e}")
 
@@ -173,8 +195,18 @@ class PacketServer:
         else:
             return 'Other'
 
-    def print_packet_info(self, packet_data, client_addr):
-        """Pretty print packet information and update counts if unique"""
+    def process_packet(self, packet_data, client_addr, environments=None):
+        """
+        Process a packet and update counts for specified environments
+
+        Args:
+            packet_data: JSON string with packet information
+            client_addr: Client address tuple (IP, port)
+            environments: List of environment names to process this packet for
+
+        Returns:
+            Boolean indicating success
+        """
         try:
             packet = json.loads(packet_data)
 
@@ -205,14 +237,18 @@ class PacketServer:
                 self.received_packet_ids.add(packet_id)
 
             # Add debugging to track packet counts
-            print(f"[SERVER] Processing new packet_id from user {username}: {packet_id}")
+            # print(f"[SERVER] Processing new packet_id from user {username}: {packet_id}")
 
-            # Determine environment
-            env_name = "default"
-            # Override with packet's environment if available
-            packet_env = packet.get('env_name')
-            if packet_env:
-                env_name = packet_env
+            # Use environments from the packet if provided
+            if not environments:
+                # Get environments from packet
+                packet_envs = packet.get('environments', [])
+                # If not specified, use a default or the client's environments
+                if not packet_envs:
+                    packet_envs = packet.get('env_name', 'default')
+                    if isinstance(packet_envs, str):
+                        packet_envs = [packet_envs]
+                environments = packet_envs
 
             # Determine protocol
             protocol = self.determine_protocol(packet)
@@ -225,6 +261,9 @@ class PacketServer:
                     else:
                         self.clients_by_username[username]['protocol_counts']['Other'] += 1
 
+                    # Increment client packet count
+                    self.clients_by_username[username]['packet_count'] += 1
+
             # Update global protocol counts
             with self.protocol_lock:
                 if protocol in self.protocol_counts:
@@ -232,15 +271,63 @@ class PacketServer:
                 else:
                     self.protocol_counts['Other'] += 1
 
-            # Update environment-specific counts
-            with self.environment_lock:
-                if env_name in self.environments:
-                    if protocol in self.environments[env_name]['protocol_counts']:
-                        self.environments[env_name]['protocol_counts'][protocol] += 1
-                    else:
-                        self.environments[env_name]['protocol_counts']['Other'] += 1
+            # Process each specified environment
+            for env_name in environments:
+                # Skip invalid environments
+                if not env_name:
+                    continue
 
-                    self.environments[env_name]['packet_count'] += 1
+                # Check if client is authorized for this environment
+                with self.clients_lock:
+                    client_envs = self.clients_by_username[username].get('environments', [])
+                    if env_name not in client_envs:
+                        print(f"[SERVER] Client {username} not authorized for {env_name}, skipping")
+                        continue
+
+                # Update environment-specific counts
+                with self.environment_lock:
+                    if env_name in self.environments:
+                        if protocol in self.environments[env_name]['protocol_counts']:
+                            self.environments[env_name]['protocol_counts'][protocol] += 1
+                        else:
+                            self.environments[env_name]['protocol_counts']['Other'] += 1
+
+                        self.environments[env_name]['packet_count'] += 1
+                    else:
+                        print(f"[SERVER] Environment {env_name} not found, skipping")
+
+            # Send acknowledgment with environment-specific protocol counts
+            try:
+                # Get client socket
+                socket_conn = None
+                with self.clients_lock:
+                    if username in self.clients_by_username:
+                        socket_conn = self.clients_by_username[username].get('socket')
+
+                if socket_conn:
+                    # Send an ACK for each environment
+                    for env_name in environments:
+                        # Get protocol counts for this environment
+                        env_protocol_counts = {}
+                        with self.environment_lock:
+                            if env_name in self.environments:
+                                env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+                            else:
+                                # Use global counts if environment not found
+                                with self.protocol_lock:
+                                    env_protocol_counts = self.protocol_counts.copy()
+
+                        # Create ACK message for this environment
+                        ack_message = {
+                            'type': 'ack',
+                            'environment': env_name,
+                            'protocol_counts': env_protocol_counts
+                        }
+
+                        # Send the ACK
+                        socket_conn.sendall((json.dumps(ack_message) + '\n').encode('utf-8'))
+            except Exception as e:
+                print(f"[SERVER] Error sending ACK: {e}")
 
             # Notify UI if callback is registered
             if self.ui_update_callback:
@@ -256,20 +343,12 @@ class PacketServer:
 
         return False
 
-    # Add method to verify environment credentials
-    def verify_environment(self, env_name, env_password):
-        """Verify environment credentials"""
-        if not env_name:
-            return True  # Allow legacy clients without environment
-
-        if env_name in self.env_credentials and self.env_credentials[env_name] == env_password:
-            return True
-        return False
-
-    # Add method to add/register environments
-    def add_environment(self, env_name, env_password):
-        """Add or update an environment"""
-        self.env_credentials[env_name] = env_password
+    # Add method to initialize environments without verification
+    def add_environment(self, env_name, env_password=None):
+        """Add or update an environment - no password verification"""
+        # Store credentials for reference if provided
+        if env_password:
+            self.env_credentials[env_name] = env_password
 
         # Initialize environment tracking if needed
         with self.environment_lock:
@@ -306,10 +385,10 @@ class PacketServer:
     def handle_client(self, conn, addr):
         print(f"New connection from {addr}")
 
-        env_name = "default"  # Default environment for backward compatibility
         authenticated = False
         buffer = ""
         username = None
+        verified_environments = []  # List of environments this client has access to
 
         try:
             # Make socket non-blocking for timeout handling
@@ -329,12 +408,10 @@ class PacketServer:
                             auth_json = json.loads(line)
 
                             if auth_json.get('type') == 'auth':
-                                client_env_name = auth_json.get('env_name')
-                                env_password = auth_json.get('env_password')
-                                account_info = auth_json.get('account_info', {})
-
                                 # Extract username from auth data
                                 username = auth_json.get('username')
+                                account_info = auth_json.get('account_info', {})
+
                                 if not username and isinstance(account_info, dict):
                                     username = account_info.get('username')
                                 if not username and isinstance(account_info, str):
@@ -344,84 +421,90 @@ class PacketServer:
 
                                 print(f"Client {addr} attempting authentication as user: {username}")
 
-                                if self.verify_environment(client_env_name, env_password):
-                                    env_name = client_env_name if client_env_name else "default"
-                                    authenticated = True
+                                # Handle multiple environments
+                                environments = auth_json.get('environments', [])
 
-                                    # Initialize environment if needed
-                                    with self.environment_lock:
-                                        if env_name not in self.environments:
-                                            self.environments[env_name] = {
-                                                'clients': {},
-                                                'protocol_counts': {
-                                                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                                    'FTP': 0, 'SMTP': 0, 'Other': 0
-                                                },
-                                                'packet_count': 0
-                                            }
+                                # For backward compatibility
+                                if not environments:
+                                    # Try legacy format (single environment)
+                                    env_name = auth_json.get('env_name')
+                                    env_password = auth_json.get('env_password')
 
-                                    # Register or update the client
-                                    with self.clients_lock:
-                                        # If user exists, update connection info but keep counts
-                                        if username in self.clients_by_username:
-                                            # Update with new connection details
-                                            self.clients_by_username[username]['connected'] = True
-                                            self.clients_by_username[username]['environment'] = env_name
-                                            self.clients_by_username[username]['account_info'] = account_info
-                                            self.clients_by_username[username]['socket'] = conn
-                                            self.clients_by_username[username]['last_addr'] = addr
-                                            print(f"User {username} reconnected, preserving packet count: {self.clients_by_username[username]['packet_count']}")
-                                        else:
-                                            # Create new user entry
-                                            self.clients_by_username[username] = {
+                                    if env_name:
+                                        environments = [{'env_name': env_name, 'env_password': env_password}]
+                                    else:
+                                        # Default environment
+                                        environments = [{'env_name': 'default', 'env_password': 'default_password'}]
+
+                                # CHANGE: SKIP ENVIRONMENT VERIFICATION - PASSWORDS ALREADY VERIFIED
+                                # Just extract the environment names
+                                verified_environments = [env.get('env_name') for env in environments if
+                                                         env.get('env_name')]
+
+                                print(f"Accepting environments without verification: {verified_environments}")
+                                authenticated = True
+
+                                # Initialize environments if needed
+                                for env in environments:
+                                    env_name = env.get('env_name')
+                                    env_password = env.get('env_password')
+
+                                    if env_name in verified_environments:
+                                        # Add/initialize environment without verification
+                                        self.add_environment(env_name, env_password)
+
+                                        # Add client to environment
+                                        with self.environment_lock:
+                                            self.environments[env_name]['clients'][username] = {
                                                 'username': username,
-                                                'packet_count': 0,  # Start with 0 for new users
-                                                'protocol_counts': {
-                                                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                                    'FTP': 0, 'SMTP': 0, 'Other': 0
-                                                },
                                                 'connected': True,
-                                                'environment': env_name,
-                                                'account_info': account_info,
-                                                'socket': conn,
-                                                'last_addr': addr
+                                                'account_info': account_info
                                             }
-                                            print(f"New user {username} registered")
 
-                                        # Map this connection to the username
-                                        self.active_connections[addr] = username
-                                    # Properly handle account_info
-                                    account_info = auth_json.get('account_info')
-                                    # If account_info is a string, keep it as is
-                                    # If it's empty or None, set to a more helpful value
-                                    if account_info in [None, "", {}, "null", "undefined"]:
-                                        account_info = "No account info"
-                                    with self.environment_lock:
-                                        self.environments[env_name]['clients'][username] = {
+                                # Register or update the client with multiple environments
+                                with self.clients_lock:
+                                    # If user exists, update connection info but keep counts
+                                    if username in self.clients_by_username:
+                                        # Update with new connection details
+                                        self.clients_by_username[username]['connected'] = True
+                                        self.clients_by_username[username]['environments'] = verified_environments
+                                        self.clients_by_username[username]['account_info'] = account_info
+                                        self.clients_by_username[username]['socket'] = conn
+                                        self.clients_by_username[username]['last_addr'] = addr
+                                        print(
+                                            f"User {username} reconnected with environments: {verified_environments}")
+                                    else:
+                                        # Create new user entry
+                                        self.clients_by_username[username] = {
                                             'username': username,
-                                            'packet_count': self.clients_by_username[username]['packet_count'],
+                                            'packet_count': 0,  # Start with 0 for new users
+                                            'protocol_counts': {
+                                                'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                'FTP': 0, 'SMTP': 0, 'Other': 0
+                                            },
                                             'connected': True,
-                                            'account_info': account_info
+                                            'environments': verified_environments,
+                                            'account_info': account_info,
+                                            'socket': conn,
+                                            'last_addr': addr
                                         }
+                                        print(
+                                            f"New user {username} registered with environments: {verified_environments}")
 
-                                    # Send auth success response
-                                    response = {
-                                        'status': 'authenticated',
-                                        'message': f'Connected as user: {username}'
-                                    }
-                                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+                                    # Map this connection to the username
+                                    self.active_connections[addr] = username
 
-                                    # Capture any additional data (like packet lines)
-                                    remaining_lines = auth_lines[i + 1:]
-                                    buffer = '\n'.join(remaining_lines)
-                                else:
-                                    # Invalid credentials
-                                    response = {
-                                        'status': 'error',
-                                        'message': 'Invalid credentials'
-                                    }
-                                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
-                                    return
+                                # Send auth success response with verified environments
+                                response = {
+                                    'status': 'authenticated',
+                                    'message': f'Connected as user: {username}',
+                                    'environments': verified_environments
+                                }
+                                conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+
+                                # Capture any additional data (like packet lines)
+                                remaining_lines = auth_lines[i + 1:]
+                                buffer = '\n'.join(remaining_lines)
                                 break  # stop after handling one valid auth
                         except json.JSONDecodeError as e:
                             print(f"Error parsing JSON line: {line} - {e}")
@@ -440,27 +523,7 @@ class PacketServer:
             if buffer and authenticated:
                 for line in buffer.strip().split('\n'):
                     if line.strip():
-                        success = self.print_packet_info(line, addr)
-                        if success:
-                            with self.clients_lock:
-                                if username in self.clients_by_username:
-                                    self.clients_by_username[username]['packet_count'] += 1
-
-                                    # Get protocol counts for this environment
-                                    env_protocol_counts = {}
-                                    with self.environment_lock:
-                                        if env_name in self.environments:
-                                            env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
-
-                                    # Send ACK
-                                    try:
-                                        ack_message = json.dumps({
-                                            'type': 'ack',
-                                            'protocol_counts': env_protocol_counts
-                                        }) + '\n'
-                                        conn.sendall(ack_message.encode('utf-8'))
-                                    except Exception as e:
-                                        print(f"Error sending ACK: {e}")
+                        self.process_packet(line, addr, verified_environments)
 
             # Enter main processing loop for this client
             while self.running and authenticated:
@@ -481,28 +544,24 @@ class PacketServer:
                         while '\n' in buffer:
                             line, buffer = buffer.split('\n', 1)
                             if line.strip():
-                                success = self.print_packet_info(line, addr)
-                                if success:
-                                    with self.clients_lock:
-                                        if username in self.clients_by_username:
-                                            self.clients_by_username[username]['packet_count'] += 1
+                                # Extract environments from packet if possible
+                                try:
+                                    packet_json = json.loads(line)
+                                    packet_environments = packet_json.get('environments', [])
 
-                                            # Send acknowledgment with protocol counts
-                                            try:
-                                                # Get protocol counts for this environment
-                                                env_protocol_counts = {}
-                                                with self.environment_lock:
-                                                    if env_name in self.environments:
-                                                        env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+                                    # If not specified in packet, use all verified environments
+                                    if not packet_environments:
+                                        packet_environments = verified_environments
 
-                                                # Send ACK
-                                                ack_message = json.dumps({
-                                                    'type': 'ack',
-                                                    'protocol_counts': env_protocol_counts
-                                                }) + '\n'
-                                                conn.sendall(ack_message.encode('utf-8'))
-                                            except Exception as e:
-                                                print(f"Error sending ACK: {e}")
+                                    # Process packet for specified environments (intersection with verified)
+                                    valid_envs = [env for env in packet_environments if env in verified_environments]
+
+                                    if valid_envs:  # Only process if there are valid environments
+                                        self.process_packet(line, addr, valid_envs)
+                                except json.JSONDecodeError:
+                                    # If can't parse JSON, use all verified environments
+                                    self.process_packet(line, addr, verified_environments)
+
                 except (ConnectionResetError, BrokenPipeError) as e:
                     print(f"Connection with {username} was reset: {e}")
                     break
@@ -526,9 +585,12 @@ class PacketServer:
                     # Remove from active connections
                     del self.active_connections[addr]
 
+            # Update environment status
             with self.environment_lock:
-                if env_name in self.environments and username and username in self.environments[env_name]['clients']:
-                    self.environments[env_name]['clients'][username]['connected'] = False
+                for env_name in verified_environments:
+                    if env_name in self.environments and username and username in self.environments[env_name][
+                        'clients']:
+                        self.environments[env_name]['clients'][username]['connected'] = False
 
             # Notify UI if registered
             if self.ui_update_callback:
@@ -541,28 +603,79 @@ class PacketServer:
                 pass
             print(f"Connection with {username or addr} closed")
 
-    def load_environments_from_db(self, db_file="../databaseV3/credentials.db"):
-        """Load environments from the credential database"""
+    def load_environments_from_db(self, db_file="credentials.db"):
+
         try:
             import sqlite3
-            conn = sqlite3.connect(db_file)
+            import os
+
+            # Get the absolute path of the parent directory of the current script
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+
+            # Try multiple possible locations for the database
+            possible_paths = [
+                db_file,  # Current directory
+                os.path.join(current_dir, db_file),  # Same directory as script
+                os.path.join(current_dir, "..", "databaseV3", db_file),  # ../databaseV3/ directory
+                os.path.join(current_dir, "..", db_file),  # Parent directory
+                os.path.abspath(db_file)  # Absolute path provided
+            ]
+
+            # Find the first path that exists
+            db_path = None
+            for path in possible_paths:
+                if os.path.exists(path):
+                    db_path = path
+                    break
+
+            if not db_path:
+                print(f"Could not find database file. Tried paths: {possible_paths}")
+                print("Using default environment only")
+
+                # Add 'C1' and 'test' environments with default passwords
+                self.add_environment('C1', 'CCC')
+                self.add_environment('test', 'test')
+                return
+
+            # Connect to the found database
+            print(f"Found database at: {db_path}")
+            conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
 
-            # Query all unique environment names and passwords
-            cursor.execute("""
-                SELECT DISTINCT env_name, env_password 
-                FROM environments
-            """)
+            # Print database schema for debugging
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            print(f"Database tables: {tables}")
 
-            for row in cursor.fetchall():
-                env_name, env_password = row
-                self.add_environment(env_name, env_password)
+            if ('environments',) in tables:
+                # Query all unique environment names and passwords
+                cursor.execute("""
+                    SELECT DISTINCT env_name, env_password 
+                    FROM environments
+                """)
+
+                env_count = 0
+                for row in cursor.fetchall():
+                    env_name, env_password = row
+                    self.add_environment(env_name, env_password)
+                    env_count += 1
+                    print(f"Loaded environment: {env_name} with password: {env_password}")
+
+                print(f"Loaded {env_count} environments from database at {db_path}")
+            else:
+                print("No 'environments' table found in database")
+                print("Adding default environments")
+                # Add 'C1' and 'test' environments with default passwords
+                self.add_environment('C1', 'CCC')
+                self.add_environment('test', 'test')
 
             conn.close()
-            print(f"Loaded {len(self.env_credentials)} environments from database")
         except Exception as e:
             print(f"Error loading environments from database: {e}")
             print("Using default environment only")
+            # Add 'C1' and 'test' environments with default passwords
+            self.add_environment('C1', 'CCC')
+            self.add_environment('test', 'test')
 
     def start(self):
         # Set socket to non-blocking mode with a timeout

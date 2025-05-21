@@ -294,11 +294,24 @@ class PacketCaptureClientUI:
                 user_id = account_info.get('user_id')
                 is_admin = account_info.get('is_admin', False)
 
-            self.log_message(f"Starting capture as: {self.backend.username} in environment: {self.backend.env_name}")
+            # Get environment names from the backend
+            env_names = []
+            if hasattr(self.backend, 'environments') and self.backend.environments:
+                env_names = [env.get('env_name') for env in self.backend.environments if env.get('env_name')]
+
+            # Create environment string for display
+            env_str = "default"
+            if env_names:
+                env_str = ", ".join(env_names)
+
+            # Use the first environment for backward compatibility with UI display
+            primary_env = env_names[0] if env_names else "default"
+
+            self.log_message(f"Starting capture as: {self.backend.username} in environments: {env_str}")
             self.update_user_info(
                 username=self.backend.username,
                 user_id=user_id,
-                environment=self.backend.env_name,
+                environment=primary_env,  # Just use the first environment for the UI display
                 is_admin=is_admin
             )
 
@@ -313,7 +326,6 @@ class PacketCaptureClientUI:
 
         self.log_message("Packet capture started")
         self.status_var.set(f"Capturing on {interface}")
-
     def stop_capture(self):
         """Stop packet capture"""
         if not self.capture_running or not self.backend:

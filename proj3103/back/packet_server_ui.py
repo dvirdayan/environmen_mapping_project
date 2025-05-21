@@ -55,7 +55,7 @@ class PacketMonitorUI:
         client_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
 
         # Create a treeview to display client information
-        columns = ("username", "ip", "port", "packets", "environment", "account", "status")
+        columns = ("username", "ip", "port", "packets", "environments", "account", "status")
         client_tree = ttk.Treeview(client_frame, columns=columns, show="headings")
 
         # Define column headings
@@ -63,8 +63,8 @@ class PacketMonitorUI:
         client_tree.heading("ip", text="Client IP")
         client_tree.heading("port", text="Port")
         client_tree.heading("packets", text="Packet Count")
-        client_tree.heading("environment", text="Environment")
-        client_tree.heading("account", text="Account")  # Add account column
+        client_tree.heading("environments", text="Environments")  # Show all environments
+        client_tree.heading("account", text="Account")
         client_tree.heading("status", text="Status")
 
         # Define column widths
@@ -72,8 +72,8 @@ class PacketMonitorUI:
         client_tree.column("ip", width=120)
         client_tree.column("port", width=60)
         client_tree.column("packets", width=80)
-        client_tree.column("environment", width=100)
-        client_tree.column("account", width=150)  # Set width for account column
+        client_tree.column("environments", width=150)  # Wider for multiple environments
+        client_tree.column("account", width=150)
         client_tree.column("status", width=80)
 
         # Add a scrollbar
@@ -203,6 +203,10 @@ class PacketMonitorUI:
                 client_id = f"{client_addr[0]}:{client_addr[1]}"
                 username = client_info.get('username', 'Unknown')
 
+                # Get environments for this client
+                client_environments = client_info.get('environments', [])
+                environment_str = ", ".join(client_environments) if client_environments else "default"
+
                 # Check if this client is already in the treeview
                 item_exists = False
                 for item_id in current_items:
@@ -220,7 +224,7 @@ class PacketMonitorUI:
                                 client_addr[0],
                                 client_addr[1],
                                 client_info['packet_count'],
-                                client_info.get('environment', 'default'),
+                                environment_str,  # Display all environments
                                 formatted_account,
                                 "Connected" if client_info['connected'] else "Disconnected"
                             )
@@ -239,7 +243,7 @@ class PacketMonitorUI:
                             client_addr[0],
                             client_addr[1],
                             client_info['packet_count'],
-                            client_info.get('environment', 'default'),
+                            environment_str,  # Display all environments
                             client_info.get('account_info', 'Unknown'),
                             "Connected" if client_info['connected'] else "Disconnected"
                         )
@@ -294,8 +298,11 @@ class PacketMonitorUI:
             clients_copy = self.server.get_clients_data()
 
             # Filter clients for this environment
-            env_clients = {addr: info for addr, info in clients_copy.items()
-                           if info.get('environment') == env_name}
+            env_clients = {}
+            for addr, info in clients_copy.items():
+                client_environments = info.get('environments', [])
+                if env_name in client_environments:
+                    env_clients[addr] = info
 
             # Get the client tree for this environment
             client_tree = self.env_tabs[env_name]['client_tree']
@@ -306,6 +313,10 @@ class PacketMonitorUI:
             # Update existing clients and add new ones for this environment
             for client_addr, client_info in env_clients.items():
                 username = client_info.get('username', 'Unknown')
+
+                # Get all environments for this client
+                client_environments = client_info.get('environments', [])
+                environment_str = ", ".join(client_environments) if client_environments else "default"
 
                 # Check if this client is already in the treeview
                 item_exists = False
@@ -320,7 +331,7 @@ class PacketMonitorUI:
                                 client_addr[0],
                                 client_addr[1],
                                 client_info['packet_count'],
-                                env_name,
+                                environment_str,  # Show all client environments
                                 client_info.get('account_info', 'Unknown'),
                                 "Connected" if client_info['connected'] else "Disconnected"
                             )
@@ -339,7 +350,7 @@ class PacketMonitorUI:
                             client_addr[0],
                             client_addr[1],
                             client_info['packet_count'],
-                            env_name,
+                            environment_str,  # Show all client environments
                             client_info.get('account_info', 'Unknown'),
                             "Connected" if client_info['connected'] else "Disconnected"
                         )

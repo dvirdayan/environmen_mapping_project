@@ -10,13 +10,14 @@ from datetime import datetime
 
 
 class StableSocketClient:
-    def __init__(self, host, port, logger=None):
+    def __init__(self, host, port, logger=None, debug_mode=True):
         self.host = host
         self.port = port
         self.socket = None
         self.connected = False
         self.running = False
         self.logger = logger
+        self.debug_mode = debug_mode  # Debug mode is enabled by default
         self.reconnect_delay = 2.0
         self.send_thread = None
         self.recv_thread = None
@@ -24,8 +25,7 @@ class StableSocketClient:
         self.packet_count = 0
         self.local_packet_count = 0
         self.auth_data = None
-        self.env_name = None
-        self.env_password = None
+        self.environments = []  # List of environment dictionaries
         self.username = None  # Add username field
         self.lock = threading.Lock()
         self.send_queue = queue.Queue()
@@ -40,16 +40,44 @@ class StableSocketClient:
             'SMTP': 0,
             'Other': 0
         }
+        # Store protocol counts per environment
+        self.environment_protocol_counts = {}
         self.protocol_update_callback = None
+
+        # Track authentication attempts
+        self.auth_attempts = 0
+        self.max_auth_attempts = 3
+
+        # Debug flags
+        self.verbose_logging = True  # Set to True for maximum verbosity
+
+        # Extended timeout for connections
+        self.connection_timeout = 30.0  # Increased from 10 to 30 seconds
+
+        # Log initialization
+        self.log(f"Initialized StableSocketClient for {host}:{port} with debug_mode={debug_mode}")
+
+    def log(self, message):
+        """Log a message with optional debug prefix"""
+        if self.debug_mode:
+            timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            formatted_message = f"[{timestamp}][SOCKET_CLIENT] {message}"
+        else:
+            formatted_message = message
+
+        if self.logger:
+            self.logger(formatted_message)
+        else:
+            print(formatted_message)
 
     def start(self):
         """Start the client."""
         if self.running:  # Check if already running
             if self.logger:
-                self.logger.warning("Client is already running.")
+                self.logger("Client is already running.")
             return
         self.running = True
-        # Add logic to start threads or other operations
+        self.log("Starting client threads...")
 
         # Start send thread
         self.send_thread = threading.Thread(target=self._send_loop)
@@ -61,67 +89,108 @@ class StableSocketClient:
         self.recv_thread.daemon = True
         self.recv_thread.start()
 
-    def set_auth(self, env_name, env_password, username=None, account_info=None):
-        """Set authentication data with account information"""
-        self.env_name = env_name
+        self.log("Client threads started")
+
+    def set_auth(self, environments, username=None, account_info=None):
+        """Set authentication data with multiple environments
+        Args:
+            environments: List of dictionaries with env_name and env_password
+            username: Username for authentication
+            account_info: Additional account information
+        """
         self.username = username
-        self.env_password = env_password
+        self.log(f"Setting authentication for user: {username}")
 
-        # Make sure we always have valid auth data
-        # Fallback to defaults if any values are missing
-        if not env_name:
-            env_name = "default"
-        if not env_password:
-            env_password = "default_password"
+        # Store the environments
+        if isinstance(environments, list):
+            self.environments = environments
+            self.log(f"Setting {len(environments)} environments")
+        else:
+            # For backward compatibility, convert single environment to list
+            env_name = getattr(environments, 'env_name', environments)
+            env_password = getattr(environments, 'env_password', None)
+            self.environments = [{'env_name': env_name, 'env_password': env_password}]
+            self.log(f"Converting single environment {env_name} to list format")
 
-        # Always create auth data, even with defaults
+        # Ensure we have at least one environment
+        if not self.environments:
+            self.log("WARNING: No environments provided, using default")
+            self.environments = [{'env_name': 'default', 'env_password': 'default_password'}]
+
+        # Log the environments (mask passwords)
+        for env in self.environments:
+            masked_pw = '*' * len(env.get('env_password', '')) if env.get('env_password') else None
+            self.log(f"Environment: {env.get('env_name')}, Password: {masked_pw}")
+
+        # Initialize protocol counts for each environment
+        for env in self.environments:
+            env_name = env.get('env_name', 'default')
+            if env_name not in self.environment_protocol_counts:
+                self.environment_protocol_counts[env_name] = {
+                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
+                }
+
+        # Create auth data with all environments
         self.auth_data = {
             'type': 'auth',
-            'env_name': env_name,
-            'env_password': env_password
+            'environments': self.environments,
+            'username': username,
+            'account_info': account_info
         }
 
-        # Add username to auth data if provided
-        if username:
-            self.auth_data['username'] = username
-            self.log(f"Auth data set with username: {username}")
-        else:
-            self.log("Auth data set without username")
+        # Log auth data with masked passwords
+        masked_auth = self.auth_data.copy()
+        if 'environments' in masked_auth:
+            masked_auth['environments'] = []
+            for env in self.environments:
+                masked_env = env.copy()
+                if 'env_password' in masked_env:
+                    masked_env['env_password'] = '*' * len(masked_env['env_password']) if masked_env[
+                        'env_password'] else None
+                masked_auth['environments'].append(masked_env)
 
-        # Add account_info to auth data if provided
-        if account_info:
-            self.auth_data['account_info'] = account_info
-            self.log(f"Auth data includes account information")
+        self.log(f"Auth data set: {json.dumps(masked_auth, indent=2)}")
 
     def set_protocol_update_callback(self, callback):
         """Set callback function to be called when protocol counts are updated"""
         self.protocol_update_callback = callback
 
-    def log(self, message):
-        if self.logger:
-            self.logger(message)
-        else:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}")
-
     def connect(self):
         """Attempt to connect to the server with improved error handling."""
         if self.connected and self.socket:
+            self.log("Already connected, skipping connection attempt")
             return True
 
         try:
             # Close any existing socket
             if self.socket:
                 try:
+                    self.log("Closing existing socket before reconnect")
                     self.socket.close()
-                except:
-                    pass
+                except Exception as e:
+                    self.log(f"Error closing existing socket: {str(e)}")
                 self.socket = None
 
-            self.log(f"Attempting to connect to {self.host}:{self.port}")
+            self.auth_attempts += 1
+            self.log(f"Attempting to connect to {self.host}:{self.port} (attempt {self.auth_attempts})")
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10.0)  # Set longer timeout for initial connection
+            self.socket.settimeout(self.connection_timeout)  # Use extended timeout
+
+            # Log socket options
+            self.log(f"Socket created with timeout={self.connection_timeout}s")
+
+            try:
+                # Get address info before connecting
+                address_info = socket.getaddrinfo(self.host, self.port,
+                                                  socket.AF_INET, socket.SOCK_STREAM)
+                self.log(f"Address info: {address_info}")
+            except socket.gaierror as e:
+                self.log(f"Error resolving address: {str(e)}")
+
+            connection_start = time.time()
             self.socket.connect((self.host, self.port))
-            self.log(f"Socket connected to {self.host}:{self.port}")
+            connection_time = time.time() - connection_start
+            self.log(f"Socket connected to {self.host}:{self.port} in {connection_time:.2f}s")
 
             # Add a small delay to ensure the server is ready for authentication
             time.sleep(0.2)
@@ -129,70 +198,151 @@ class StableSocketClient:
             # Handle authentication - always send auth data
             if not self.auth_data:
                 # Create minimal auth data if none exists
+                self.log("WARNING: No auth data set before connect, creating minimal auth")
                 self.auth_data = {
                     'type': 'auth',
-                    'env_name': self.env_name or "default",
-                    'env_password': self.env_password or "default_password"
+                    'environments': self.environments,
+                    'username': self.username
                 }
-                if self.username:
-                    self.auth_data['username'] = self.username
 
             try:
-                # Log what we're sending (mask password)
+                # Log what we're sending (mask passwords)
                 log_data = self.auth_data.copy()
-                if 'env_password' in log_data:
-                    log_data['env_password'] = '******'
-                self.log(f"Sending auth data: {log_data}")
+                if 'environments' in log_data:
+                    for env in log_data['environments']:
+                        if 'env_password' in env:
+                            env['env_password'] = '******'
+                self.log(f"Sending auth data: {json.dumps(log_data, indent=2)}")
 
                 # Send auth data
                 auth_message = json.dumps(self.auth_data) + '\n'
+                self.log(f"Raw auth message ({len(auth_message)} bytes): {auth_message}")
+
+                send_start = time.time()
                 self.socket.sendall(auth_message.encode('utf-8'))
+                send_time = time.time() - send_start
+                self.log(f"Auth data sent in {send_time:.2f}s, waiting for response...")
 
                 # Wait for response with timeout
                 response_data = b""
-                timeout_time = time.time() + 5.0  # 5 second timeout
+                timeout_time = time.time() + self.connection_timeout  # Extended timeout for response
+
+                # Track the response receiving process
+                last_log_time = time.time()
+                chunks_received = 0
 
                 while time.time() < timeout_time:
                     try:
-                        chunk = self.socket.recv(1024)
-                        if not chunk:
-                            break
-                        response_data += chunk
+                        # Log waiting for data periodically
+                        if time.time() - last_log_time > 1.0:  # Log every second
+                            self.log(f"Waiting for auth response... ({chunks_received} chunks so far)")
+                            last_log_time = time.time()
 
-                        # Check if we have a complete response
-                        if b'\n' in response_data:
+                        # Try to receive with shorter timeout
+                        self.socket.settimeout(1.0)
+                        chunk = self.socket.recv(1024)
+
+                        if chunk:
+                            chunks_received += 1
+                            chunk_hex = ' '.join([f'{b:02x}' for b in chunk[:20]]) + "..." if len(
+                                chunk) > 20 else ' '.join([f'{b:02x}' for b in chunk])
+                            self.log(f"Received chunk {chunks_received}: {len(chunk)} bytes, hex: {chunk_hex}")
+                            response_data += chunk
+
+                            # Log raw received data for debugging
+                            try:
+                                chunk_text = chunk.decode('utf-8', errors='ignore')
+                                self.log(f"Chunk {chunks_received} text: {chunk_text}")
+                            except:
+                                pass
+                        else:
+                            self.log("Server closed connection during auth (empty chunk)")
                             break
+
+                        # Check if we have a complete response (has newline)
+                        if b'\n' in response_data:
+                            self.log("Complete response received (found newline)")
+                            break
+
                     except socket.timeout:
+                        self.log("Socket timeout during single auth response chunk, continuing to wait")
+                        continue  # Continue waiting for data
+                    except Exception as e:
+                        self.log(f"Exception during auth response chunk: {str(e)}")
                         break
 
-                response_text = response_data.decode('utf-8', errors='ignore').strip()
-                self.log(f"Auth response received ({len(response_text)} bytes): {response_text[:100]}...")
+                # Check for timeout
+                if time.time() >= timeout_time:
+                    self.log("Authentication timed out waiting for response")
+                    self.socket.close()
+                    self.socket = None
+                    return False
 
-                # Process response
+                if not response_data:
+                    self.log("No authentication response received")
+                    self.socket.close()
+                    self.socket = None
+                    return False
+
+                # Decode the response
+                response_text = response_data.decode('utf-8', errors='ignore').strip()
+                self.log(f"Auth response received ({len(response_text)} bytes)")
+                self.log(f"Full response text: {response_text}")
+
+                # Process response to determine if authenticated
                 authenticated = False
 
+                # Check for simple text match first
                 if "authenticated" in response_text or "success" in response_text:
                     authenticated = True
                     self.log("Authentication successful via text matching")
                 else:
-                    # Try JSON parsing for each line
+                    # Try parsing JSON for each line
                     for line in response_text.split('\n'):
                         if not line.strip():
                             continue
                         try:
+                            self.log(f"Trying to parse JSON line: {line}")
                             response = json.loads(line)
+                            self.log(f"Parsed JSON response: {json.dumps(response, indent=2)}")
+
                             if response.get('status') == 'authenticated':
                                 authenticated = True
-                                self.log("Authentication successful via JSON")
+                                self.log("Authentication successful via JSON parsing")
+
+                                # Check if server sent back allowed environments
+                                if 'environments' in response:
+                                    self.log(f"Server confirmed environments: {response['environments']}")
                                 break
-                        except:
-                            pass
+                        except json.JSONDecodeError as e:
+                            self.log(f"Failed to parse JSON response line: {line[:100]} - Error: {str(e)}")
+                            continue
 
                 if not authenticated:
-                    self.log("Authentication failed")
+                    self.log("Authentication failed - server did not confirm authentication")
                     self.socket.close()
                     self.socket = None
                     return False
+
+                # Set to non-blocking for normal operation
+                self.socket.setblocking(False)
+                self.connected = True
+                self.log(f"Successfully connected to server {self.host}:{self.port}")
+
+                # Reset packet count on successful reconnection
+                with self.lock:
+                    self.packet_count = 0
+
+                # Clear pending packets on reconnection
+                with self.pending_packets_lock:
+                    self.pending_packets.clear()
+
+                # Reset auth attempts counter on success
+                self.auth_attempts = 0
+
+                # Wait a short time before sending packets to ensure everything is ready
+                time.sleep(0.5)
+                return True
 
             except socket.timeout:
                 self.log("Authentication response timeout")
@@ -201,26 +351,10 @@ class StableSocketClient:
                 return False
             except Exception as e:
                 self.log(f"Authentication error: {str(e)}")
+                self.log(traceback.format_exc())
                 self.socket.close()
                 self.socket = None
                 return False
-
-            # Set to non-blocking for normal operation
-            self.socket.setblocking(False)
-            self.connected = True
-            self.log(f"Successfully connected to server {self.host}:{self.port}")
-
-            # Reset packet count on successful reconnection
-            with self.lock:
-                self.packet_count = 0
-
-            # Clear pending packets on reconnection
-            with self.pending_packets_lock:
-                self.pending_packets.clear()
-
-            # Wait a short time before sending packets to ensure everything is ready
-            time.sleep(0.5)
-            return True
 
         except socket.error as e:
             self.log(f"Connection error: {str(e)}")
@@ -234,6 +368,7 @@ class StableSocketClient:
             return False
         except Exception as e:
             self.log(f"Unexpected connection error: {str(e)}")
+            self.log(traceback.format_exc())
             if self.socket:
                 try:
                     self.socket.close()
@@ -249,7 +384,7 @@ class StableSocketClient:
             self.socket.sendall(data)
         except socket.error as e:
             if self.logger:
-                self.logger.error(f"Send error: {e}")
+                self.logger(f"Send error: {e}")
             self.connected = False
             self.connect()  # Reconnect and retry
 
@@ -259,7 +394,7 @@ class StableSocketClient:
             return self.socket.recv(1024)
         except socket.error as e:
             if self.logger:
-                self.logger.error(f"Receive error: {e}")
+                self.logger(f"Receive error: {e}")
             self.connected = False
             self.connect()  # Reconnect and retry
 
@@ -267,10 +402,10 @@ class StableSocketClient:
         """Stop the client."""
         if not self.running:  # Check if already stopped
             if self.logger:
-                self.logger.warning("Client is not running.")
+                self.logger("Client is not running.")
             return
         self.running = False
-        # Add logic to stop threads or other operations
+        self.log("Stopping client...")
 
         # Clear queue
         try:
@@ -285,30 +420,36 @@ class StableSocketClient:
         with self.lock:
             if self.socket:
                 try:
+                    self.log("Closing socket...")
                     self.socket.close()
-                except:
-                    pass
+                except Exception as e:
+                    self.log(f"Error closing socket: {str(e)}")
                 self.socket = None
             self.connected = False
 
         # Wait for threads
         if self.send_thread and self.send_thread.is_alive():
+            self.log("Waiting for send thread to stop...")
             self.send_thread.join(timeout=1.0)
 
         if self.recv_thread and self.recv_thread.is_alive():
+            self.log("Waiting for receive thread to stop...")
             self.recv_thread.join(timeout=1.0)
 
         self.log("Client stopped")
 
-    def send_packet(self, packet_dict):
+    def send_packet(self, packet_dict, target_environments=None):
+        """Send a packet to all environments the user is connected to.
+
+        Args:
+            packet_dict: The packet data to send
+            target_environments: Ignored - always sends to all environments
+        """
         if not self.running:
             return False
 
         try:
             if isinstance(packet_dict, dict):
-                if self.env_name and 'env_name' not in packet_dict:
-                    packet_dict['env_name'] = self.env_name
-
                 # Add username to each packet
                 if self.username and 'username' not in packet_dict:
                     packet_dict['username'] = self.username
@@ -316,6 +457,16 @@ class StableSocketClient:
                 # Always ensure packet has a unique ID
                 if 'packet_id' not in packet_dict:
                     packet_dict['packet_id'] = str(uuid.uuid4())
+
+                # Always send to all configured environments, ignoring target_environments
+                envs_to_send = self.environments
+
+                if not envs_to_send:
+                    self.log("Warning: No environments to send packet to")
+                    return False
+
+                # Add environments list to packet
+                packet_dict['environments'] = [env.get('env_name') for env in envs_to_send]
 
                 # Add to pending packets set with lock
                 with self.pending_packets_lock:
@@ -325,13 +476,16 @@ class StableSocketClient:
                 serialized = json.dumps(packet_dict) + '\n'
                 self.send_queue.put(serialized)
 
-                self.log(f"[CLIENT] Queued packet {packet_dict['packet_id']}")
+                if self.verbose_logging:
+                    self.log(
+                        f"[CLIENT] Queued packet {packet_dict['packet_id']} for environments: {packet_dict['environments']}")
                 return True
             else:
                 self.log(f"Error: Expected dict for packet, got {type(packet_dict)}")
                 return False
         except Exception as e:
             self.log(f"Error queueing packet: {str(e)}")
+            self.log(traceback.format_exc())
             return False
 
     def _send_loop(self):
@@ -348,9 +502,16 @@ class StableSocketClient:
                     # Don't spam reconnection attempts
                     if current_time - reconnect_time >= self.reconnect_delay:
                         reconnect_time = current_time
-                        if self.connect():  # Try to connect with proper error handling
-                            # Reset heartbeat timer after successful reconnection
-                            last_heartbeat_time = current_time
+                        # Only try to reconnect if we haven't exceeded max attempts
+                        if self.auth_attempts < self.max_auth_attempts:
+                            if self.connect():  # Try to connect with proper error handling
+                                # Reset heartbeat timer after successful reconnection
+                                last_heartbeat_time = current_time
+                        else:
+                            self.log(
+                                f"Exceeded max auth attempts ({self.max_auth_attempts}). Waiting longer before retry.")
+                            time.sleep(self.reconnect_delay * 5)  # Wait 5x longer
+                            self.auth_attempts = 0  # Reset counter to allow future attempts
                     time.sleep(0.5)
                     continue
 
@@ -359,12 +520,9 @@ class StableSocketClient:
                     try:
                         heartbeat = {
                             'type': 'heartbeat',
-                            'timestamp': datetime.now().isoformat()
+                            'timestamp': datetime.now().isoformat(),
+                            'environments': [env.get('env_name') for env in self.environments]
                         }
-
-                        # Add environment name to heartbeat if available
-                        if self.env_name:
-                            heartbeat['env_name'] = self.env_name
 
                         serialized = json.dumps(heartbeat) + '\n'
                         with self.lock:
@@ -400,8 +558,6 @@ class StableSocketClient:
 
                         # Make sure data is properly formatted
                         if isinstance(data, dict):
-                            if self.env_name and 'env_name' not in data:
-                                data['env_name'] = self.env_name
                             data = json.dumps(data) + '\n'
                         elif isinstance(data, str) and not data.endswith('\n'):
                             data += '\n'
@@ -437,28 +593,31 @@ class StableSocketClient:
 
         while self.running:
             try:
-                # Check connection
+                # Check connection status
+                if not self.connected or self.socket is None:
+                    time.sleep(0.5)
+                    continue
+
+                # Make a local copy of socket to avoid race conditions
                 with self.lock:
                     if not self.connected or self.socket is None:
-                        time.sleep(0.5)
                         continue
-
-                    # Make a local copy of socket to avoid race conditions
                     current_socket = self.socket
 
                 # Safely check for data without holding the lock
                 try:
+                    # Use select with a short timeout to avoid blocking
                     readable, _, exceptional = select.select([current_socket], [], [current_socket], 0.5)
-                except (select.error, ValueError, TypeError):
+                except (select.error, ValueError, TypeError) as e:
+                    self.log(f"Socket selection error: {str(e)}")
                     with self.lock:
                         self.connected = False
                         if self.socket:
                             try:
                                 self.socket.close()
-                            except:
-                                pass
+                            except Exception as close_error:
+                                self.log(f"Error closing socket: {close_error}")
                             self.socket = None
-                    self.log("Socket selection error, connection marked as closed")
                     continue
 
                 # Check for exceptional conditions
@@ -478,14 +637,11 @@ class StableSocketClient:
                 if current_socket in readable:
                     try:
                         # Try to read data
-                        with self.lock:
-                            if not self.connected or self.socket is None:
-                                continue
-
-                            try:
-                                data = self.socket.recv(4096)
-                            except (socket.error, OSError) as e:
-                                self.log(f"Socket error during receive: {str(e)}")
+                        try:
+                            data = current_socket.recv(4096)
+                        except (socket.error, OSError) as e:
+                            self.log(f"Socket error during receive: {str(e)}")
+                            with self.lock:
                                 self.connected = False
                                 if self.socket:
                                     try:
@@ -493,7 +649,7 @@ class StableSocketClient:
                                     except:
                                         pass
                                     self.socket = None
-                                continue
+                            continue
 
                         # Process received data
                         if not data:
@@ -544,11 +700,22 @@ class StableSocketClient:
                                                 self.log(f"Packet count updated to {self.packet_count}")
                                                 last_packet_count_log = self.packet_count
 
-                                        # Get protocol counts if available
+                                        # Get protocol counts for each environment if available
+                                        env_name = response.get('environment')
                                         if 'protocol_counts' in response:
-                                            self.protocol_counts = response['protocol_counts']
+                                            protocol_counts = response['protocol_counts']
+
+                                            # Update environment-specific counts if environment is specified
+                                            if env_name and env_name in self.environment_protocol_counts:
+                                                self.environment_protocol_counts[env_name] = protocol_counts
+                                                self.log(f"Updated protocol counts for environment: {env_name}")
+
+                                            # Also update global counts
+                                            self.protocol_counts = protocol_counts
+
+                                            # Call update callback if registered
                                             if self.protocol_update_callback:
-                                                self.protocol_update_callback(self.protocol_counts)
+                                                self.protocol_update_callback(self.protocol_counts, env_name)
 
                                     elif msg_type == 'stats':
                                         self.log("Received stats update from server")
@@ -556,6 +723,17 @@ class StableSocketClient:
                                         if 'protocol_counts' in response:
                                             old_counts = self.protocol_counts.copy()
                                             self.protocol_counts = response['protocol_counts']
+
+                                            # If environment-specific counts are included
+                                            env_name = response.get('environment')
+                                            if env_name and 'protocol_counts' in response:
+                                                if env_name not in self.environment_protocol_counts:
+                                                    self.environment_protocol_counts[env_name] = {
+                                                        'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                        'FTP': 0, 'SMTP': 0, 'Other': 0
+                                                    }
+                                                self.environment_protocol_counts[env_name] = response['protocol_counts']
+                                                self.log(f"Updated stats for environment: {env_name}")
 
                                             # Calculate total packets from protocol counts
                                             new_total = sum(self.protocol_counts.values())
@@ -567,7 +745,7 @@ class StableSocketClient:
 
                                             # Update the UI if callback is registered
                                             if self.protocol_update_callback:
-                                                self.protocol_update_callback(self.protocol_counts)
+                                                self.protocol_update_callback(self.protocol_counts, env_name)
 
                                         # If stats message contains a packet_count, sync to it
                                         if 'packet_count' in response:
@@ -580,6 +758,10 @@ class StableSocketClient:
 
                                     elif msg_type == 'authenticated':
                                         self.log(f"Authentication confirmed: {response.get('message', '')}")
+                                        # Check if server sent back allowed environments
+                                        if 'environments' in response:
+                                            self.log(
+                                                f"Server confirmed access to environments: {response['environments']}")
 
                                     elif msg_type == 'error':
                                         self.log(f"Error from server: {response.get('message', 'Unknown error')}")
@@ -588,7 +770,7 @@ class StableSocketClient:
                                         self.log(f"Unhandled message type: {msg_type}")
 
                                 except json.JSONDecodeError as e:
-                                    self.log(f"Invalid JSON: {line[:30]}... - Error: {str(e)}")
+                                    self.log(f"Invalid JSON: {line[:100]}... - Error: {str(e)}")
 
                         except UnicodeDecodeError:
                             self.log("Received non-UTF8 data, ignoring")
@@ -609,21 +791,73 @@ class StableSocketClient:
         with self.lock:
             return self.local_packet_count
 
-    def get_protocol_counts(self):
-        """Return the current protocol counts received from server"""
+    def get_protocol_counts(self, environment=None):
+        """Return the current protocol counts received from server
+
+        Args:
+            environment: Optional environment name to get counts for
+        """
+        if environment and environment in self.environment_protocol_counts:
+            return self.environment_protocol_counts[environment].copy()
         return self.protocol_counts.copy()
 
-    def get_protocol_percentages(self):
-        """Calculate protocol percentages based on current counts"""
+    def get_protocol_percentages(self, environment=None):
+        """Calculate protocol percentages based on current counts
+
+        Args:
+            environment: Optional environment name to get percentages for
+        """
+        counts = self.get_protocol_counts(environment)
+
         percentages = {}
-        total = sum(self.protocol_counts.values())
+        total = sum(counts.values())
 
         if total > 0:
-            for protocol, count in self.protocol_counts.items():
+            for protocol, count in counts.items():
                 percentages[protocol] = round((count / total) * 100, 2)
         else:
             # If no packets yet, set all to 0%
-            for protocol in self.protocol_counts.keys():
+            for protocol in counts.keys():
                 percentages[protocol] = 0.0
 
         return percentages
+
+    def get_environments(self):
+        """Return the list of environments this client is connected to"""
+        return [env.get('env_name') for env in self.environments]
+
+    def dump_debug_info(self):
+        """Dump all debug information to the log"""
+        self.log("--- CLIENT DEBUG DUMP ---")
+        self.log(f"Connected: {self.connected}")
+        self.log(f"Running: {self.running}")
+        self.log(f"Auth attempts: {self.auth_attempts}")
+        self.log(f"Username: {self.username}")
+
+        # Environments (masked passwords)
+        env_info = []
+        for env in self.environments:
+            masked_pw = '*' * len(env.get('env_password', '')) if env.get('env_password') else None
+            env_info.append(f"{env.get('env_name')}: {masked_pw}")
+        self.log(f"Environments: {env_info}")
+
+        # Protocol counts
+        self.log(f"Global protocol counts: {self.protocol_counts}")
+        for env_name, counts in self.environment_protocol_counts.items():
+            self.log(f"Protocol counts for {env_name}: {counts}")
+
+        # Packet counts
+        self.log(f"Packet count: {self.packet_count}")
+        self.log(f"Local packet count: {self.local_packet_count}")
+        self.log(f"Pending packets: {len(self.pending_packets)}")
+
+        # Thread status
+        if self.send_thread:
+            self.log(f"Send thread alive: {self.send_thread.is_alive()}")
+        if self.recv_thread:
+            self.log(f"Receive thread alive: {self.recv_thread.is_alive()}")
+
+        # Queue status
+        self.log(f"Send queue size: {self.send_queue.qsize()}")
+
+        self.log("--- END DEBUG DUMP ---")

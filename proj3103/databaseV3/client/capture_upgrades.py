@@ -1,6 +1,7 @@
 import threading
 from datetime import datetime
 
+
 def upgrade_to_real_capture(backend):
     """Upgrade from test packets to real capture once connection is stable"""
     if backend.packet_handler:
