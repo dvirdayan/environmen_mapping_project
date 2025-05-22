@@ -31,6 +31,11 @@ class StableSocketClient:
         self.send_queue = queue.Queue()
         self.pending_packets = set()
         self.pending_packets_lock = threading.Lock()
+
+        # Add a set to track acknowledged packet IDs to prevent duplicate counting
+        self.acked_packet_ids = set()
+        self.acked_packet_ids_lock = threading.Lock()
+
         self.protocol_counts = {
             'TCP': 0,
             'UDP': 0,
@@ -54,6 +59,11 @@ class StableSocketClient:
         # Extended timeout for connections
         self.connection_timeout = 30.0  # Increased from 10 to 30 seconds
 
+        # **FIXED: Separate locks for different data structures**
+        self.protocol_counts_lock = threading.Lock()
+        self.last_global_stats_update = 0
+        self.last_env_stats_update = {}
+
         # Log initialization
         self.log(f"Initialized StableSocketClient for {host}:{port} with debug_mode={debug_mode}")
 
@@ -61,7 +71,7 @@ class StableSocketClient:
         """Log a message with optional debug prefix"""
         if self.debug_mode:
             timestamp = datetime.now().strftime('%H:%M:%S.%f')[:-3]
-            formatted_message = f"[{timestamp}][SOCKET_CLIENT] {message}"
+            formatted_message = f"[{timestamp}][CLIENT] {message}"
         else:
             formatted_message = message
 
@@ -93,6 +103,7 @@ class StableSocketClient:
 
     def set_auth(self, environments, username=None, account_info=None):
         """Set authentication data with multiple environments
+
         Args:
             environments: List of dictionaries with env_name and env_password
             username: Username for authentication
@@ -329,9 +340,14 @@ class StableSocketClient:
                 self.connected = True
                 self.log(f"Successfully connected to server {self.host}:{self.port}")
 
-                # Reset packet count on successful reconnection
+                # **FIXED: Reset counters on successful reconnection**
                 with self.lock:
                     self.packet_count = 0
+                    self.local_packet_count = 0
+
+                # Clear acknowledged packet IDs on reconnection
+                with self.acked_packet_ids_lock:
+                    self.acked_packet_ids.clear()
 
                 # Clear pending packets on reconnection
                 with self.pending_packets_lock:
@@ -478,7 +494,7 @@ class StableSocketClient:
 
                 if self.verbose_logging:
                     self.log(
-                        f"[CLIENT] Queued packet {packet_dict['packet_id']} for environments: {packet_dict['environments']}")
+                        f"Queued packet {packet_dict['packet_id']} for environments: {packet_dict['environments']}")
                 return True
             else:
                 self.log(f"Error: Expected dict for packet, got {type(packet_dict)}")
@@ -669,12 +685,6 @@ class StableSocketClient:
                             text_data = data.decode('utf-8')
                             buffer += text_data
 
-                            # Log raw data for debugging (truncated to avoid spamming logs)
-                            if len(text_data) > 200:
-                                self.log(f"Received data: {text_data[:100]}...{text_data[-100:]}")
-                            else:
-                                self.log(f"Received data: {text_data}")
-
                             # Process complete messages
                             while '\n' in buffer:
                                 line, buffer = buffer.split('\n', 1)
@@ -684,77 +694,91 @@ class StableSocketClient:
                                 try:
                                     response = json.loads(line)
                                     msg_type = response.get('type', 'unknown')
-                                    self.log(f"Received message type: {msg_type}")
 
                                     if msg_type == 'ack':
-                                        # Update last acknowledgment time
+                                        # **FIXED: Only process ACK for packet counting, not protocol counts**
                                         self.last_ack_time = time.time()
 
-                                        # Increment packet count when ACK received
-                                        with self.lock:
-                                            self.packet_count += 1
-                                            self.local_packet_count += 1
+                                        # Check if the ACK contains a packet ID
+                                        packet_id = response.get('packet_id')
 
-                                            # Log packet count periodically to avoid log spam
-                                            if self.packet_count - last_packet_count_log >= 10:
-                                                self.log(f"Packet count updated to {self.packet_count}")
-                                                last_packet_count_log = self.packet_count
+                                        # Only increment packet count if this is a new packet_id
+                                        if packet_id:
+                                            with self.acked_packet_ids_lock:
+                                                if packet_id not in self.acked_packet_ids:
+                                                    with self.lock:
+                                                        self.packet_count += 1
+                                                        self.local_packet_count += 1
 
-                                        # Get protocol counts for each environment if available
-                                        env_name = response.get('environment')
-                                        if 'protocol_counts' in response:
-                                            protocol_counts = response['protocol_counts']
+                                                    # Add to the set of acknowledged packet IDs
+                                                    self.acked_packet_ids.add(packet_id)
 
-                                            # Update environment-specific counts if environment is specified
-                                            if env_name and env_name in self.environment_protocol_counts:
-                                                self.environment_protocol_counts[env_name] = protocol_counts
-                                                self.log(f"Updated protocol counts for environment: {env_name}")
+                                                    # Limit the size of the acked_packet_ids set
+                                                    if len(self.acked_packet_ids) > 10000:
+                                                        # Simple approach: keep most recent 5000 IDs
+                                                        self.acked_packet_ids = set(list(self.acked_packet_ids)[-5000:])
 
-                                            # Also update global counts
-                                            self.protocol_counts = protocol_counts
+                                                    # Log packet count periodically to avoid log spam
+                                                    if self.packet_count - last_packet_count_log >= 10:
+                                                        self.log(f"Packet count updated to {self.packet_count}")
+                                                        last_packet_count_log = self.packet_count
 
-                                            # Call update callback if registered
-                                            if self.protocol_update_callback:
-                                                self.protocol_update_callback(self.protocol_counts, env_name)
+                                        # **REMOVED: Don't process protocol counts from ACK to avoid conflicts**
 
                                     elif msg_type == 'stats':
-                                        self.log("Received stats update from server")
-                                        # Update protocol counts from stats message
+                                        # **FIXED: Handle global vs environment stats separately**
+                                        current_time = time.time()
+                                        env_name = response.get('environment')
+
                                         if 'protocol_counts' in response:
-                                            old_counts = self.protocol_counts.copy()
-                                            self.protocol_counts = response['protocol_counts']
+                                            if env_name:
+                                                # This is environment-specific stats
+                                                # Throttle per environment to prevent spam
+                                                if env_name not in self.last_env_stats_update:
+                                                    self.last_env_stats_update[env_name] = 0
 
-                                            # If environment-specific counts are included
-                                            env_name = response.get('environment')
-                                            if env_name and 'protocol_counts' in response:
-                                                if env_name not in self.environment_protocol_counts:
-                                                    self.environment_protocol_counts[env_name] = {
-                                                        'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                                        'FTP': 0, 'SMTP': 0, 'Other': 0
-                                                    }
-                                                self.environment_protocol_counts[env_name] = response['protocol_counts']
-                                                self.log(f"Updated stats for environment: {env_name}")
+                                                if current_time - self.last_env_stats_update[env_name] < 2.0:
+                                                    continue
 
-                                            # Calculate total packets from protocol counts
-                                            new_total = sum(self.protocol_counts.values())
-                                            old_total = sum(old_counts.values())
+                                                self.last_env_stats_update[env_name] = current_time
 
-                                            # Log if there's a significant change
-                                            if abs(new_total - old_total) > 5:
-                                                self.log(f"Protocol counts updated: {old_total} → {new_total}")
+                                                with self.protocol_counts_lock:
+                                                    # Update environment-specific counts
+                                                    if env_name not in self.environment_protocol_counts:
+                                                        self.environment_protocol_counts[env_name] = {
+                                                            'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                                                            'FTP': 0, 'SMTP': 0, 'Other': 0
+                                                        }
+                                                    self.environment_protocol_counts[env_name] = response[
+                                                        'protocol_counts']
+                                                    self.log(f"Updated environment stats for: {env_name}")
 
-                                            # Update the UI if callback is registered
-                                            if self.protocol_update_callback:
-                                                self.protocol_update_callback(self.protocol_counts, env_name)
+                                                # Update UI with environment-specific data
+                                                if self.protocol_update_callback:
+                                                    self.protocol_update_callback(response['protocol_counts'], env_name)
+                                            else:
+                                                # This is global stats - throttle global updates
+                                                if current_time - self.last_global_stats_update < 1.0:
+                                                    continue
 
-                                        # If stats message contains a packet_count, sync to it
-                                        if 'packet_count' in response:
-                                            server_count = response.get('packet_count', 0)
-                                            with self.lock:
-                                                if abs(server_count - self.packet_count) > 5:
-                                                    self.log(
-                                                        f"Syncing packet count with server: {self.packet_count} → {server_count}")
-                                                    self.packet_count = server_count
+                                                self.last_global_stats_update = current_time
+
+                                                with self.protocol_counts_lock:
+                                                    old_counts = self.protocol_counts.copy()
+                                                    self.protocol_counts = response['protocol_counts']
+
+                                                    # Calculate total packets from protocol counts
+                                                    new_total = sum(self.protocol_counts.values())
+                                                    old_total = sum(old_counts.values())
+
+                                                    # Log if there's a significant change
+                                                    if abs(new_total - old_total) > 5:
+                                                        self.log(
+                                                            f"Global protocol counts updated: {old_total} → {new_total}")
+
+                                                # **IMPORTANT: Only update main UI with global stats (no environment parameter)**
+                                                if self.protocol_update_callback:
+                                                    self.protocol_update_callback(self.protocol_counts, None)
 
                                     elif msg_type == 'authenticated':
                                         self.log(f"Authentication confirmed: {response.get('message', '')}")
@@ -797,9 +821,10 @@ class StableSocketClient:
         Args:
             environment: Optional environment name to get counts for
         """
-        if environment and environment in self.environment_protocol_counts:
-            return self.environment_protocol_counts[environment].copy()
-        return self.protocol_counts.copy()
+        with self.protocol_counts_lock:
+            if environment and environment in self.environment_protocol_counts:
+                return self.environment_protocol_counts[environment].copy()
+            return self.protocol_counts.copy()
 
     def get_protocol_percentages(self, environment=None):
         """Calculate protocol percentages based on current counts
@@ -842,14 +867,21 @@ class StableSocketClient:
         self.log(f"Environments: {env_info}")
 
         # Protocol counts
-        self.log(f"Global protocol counts: {self.protocol_counts}")
-        for env_name, counts in self.environment_protocol_counts.items():
-            self.log(f"Protocol counts for {env_name}: {counts}")
+        with self.protocol_counts_lock:
+            self.log(f"Global protocol counts: {self.protocol_counts}")
+            for env_name, counts in self.environment_protocol_counts.items():
+                self.log(f"Protocol counts for {env_name}: {counts}")
 
         # Packet counts
-        self.log(f"Packet count: {self.packet_count}")
-        self.log(f"Local packet count: {self.local_packet_count}")
-        self.log(f"Pending packets: {len(self.pending_packets)}")
+        with self.lock:
+            self.log(f"Packet count: {self.packet_count}")
+            self.log(f"Local packet count: {self.local_packet_count}")
+
+        with self.pending_packets_lock:
+            self.log(f"Pending packets: {len(self.pending_packets)}")
+
+        with self.acked_packet_ids_lock:
+            self.log(f"Acked packet IDs count: {len(self.acked_packet_ids)}")
 
         # Thread status
         if self.send_thread:

@@ -29,6 +29,11 @@ class PacketCaptureClientUI:
             'Other': 0
         }
 
+        # **FIXED: Add update throttling for UI**
+        self.last_protocol_update = 0
+        self.update_lock = False
+        self.pie_chart_update_lock = False
+
         # Setup UI components
         self.setup_ui()
 
@@ -326,6 +331,7 @@ class PacketCaptureClientUI:
 
         self.log_message("Packet capture started")
         self.status_var.set(f"Capturing on {interface}")
+
     def stop_capture(self):
         """Stop packet capture"""
         if not self.capture_running or not self.backend:
@@ -364,13 +370,45 @@ class PacketCaptureClientUI:
 
     def update_protocol_counts(self, protocol_counts):
         """Update the protocol distribution display"""
-        # Store current protocol counts
-        self.protocol_counts = protocol_counts
+        # **FIXED: Add throttling and locking to prevent flashing**
+        current_time = time.time()
 
-        # Update the labels with new values
-        for protocol, count in protocol_counts.items():
-            if protocol in self.protocol_labels:
-                self.protocol_labels[protocol].set(str(count))
+        # Throttle updates to prevent flashing (max once per second)
+        if current_time - self.last_protocol_update < 1.0:
+            return
+
+        # Prevent overlapping updates
+        if self.update_lock:
+            return
+
+        self.update_lock = True
+        self.last_protocol_update = current_time
+
+        try:
+            # Store current protocol counts
+            self.protocol_counts = protocol_counts
+
+            # Update the labels with new values
+            for protocol, count in protocol_counts.items():
+                if protocol in self.protocol_labels:
+                    self.protocol_labels[protocol].set(str(count))
+
+            # Force update to make changes visible immediately
+            self.root.update_idletasks()
+
+        finally:
+            self.update_lock = False
+
+    def update_protocol_counts_for_env(self, protocol_counts, environment=None):
+        """Update protocol counts for a specific environment or global"""
+        # **FIXED: Only update main UI with global stats**
+        if environment is None:
+            # This is global stats - update the main UI
+            self.update_protocol_counts(protocol_counts)
+        else:
+            # This is environment-specific stats - don't update main UI to prevent flashing
+            # Environment tabs would handle this separately if they exist
+            pass
 
     def process_packet(self, packet_data):
         """Process received packet data"""
@@ -386,6 +424,24 @@ class PacketCaptureClientUI:
                     pass
         except Exception as e:
             self.log_message(f"Error queuing packet: {str(e)}")
+
+    def process_packet_with_environments(self, packet_data, environments=None):
+        """Process packet with environment information"""
+        # First call the original process_packet method
+        self.process_packet(packet_data)
+
+        # If environments are specified, log them (but don't spam the log)
+        if environments and len(environments) > 0:
+            # Only log occasionally to avoid spam
+            if hasattr(self, '_last_env_log_time'):
+                if time.time() - self._last_env_log_time > 10:  # Log every 10 seconds
+                    env_str = ", ".join(environments)
+                    self.log_message(f"Packets being sent to environments: {env_str}")
+                    self._last_env_log_time = time.time()
+            else:
+                env_str = ", ".join(environments)
+                self.log_message(f"Packets being sent to environments: {env_str}")
+                self._last_env_log_time = time.time()
 
     def start_processing_packets(self):
         """Process packets from the queue and update UI"""

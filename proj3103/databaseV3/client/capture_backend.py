@@ -165,16 +165,22 @@ class StablePacketCaptureBackend:
             protocol_counts: Dictionary of protocol counts
             environment: Optional environment name these counts belong to
         """
-        # Update global counts
-        self.protocol_counts = protocol_counts
+        # **FIXED: Handle global vs environment-specific updates properly**
+        if environment is None:
+            # This is global stats - update global counts and main UI
+            self.protocol_counts = protocol_counts
 
-        # If environment is specified, update environment-specific counts
-        if environment and environment in self.environment_protocol_counts:
-            self.environment_protocol_counts[environment] = protocol_counts
+            # Update UI with global protocol counts (for main display and pie chart)
+            if self.ui:
+                self.ui_queue.put(("protocol_counts", protocol_counts, None))
+        else:
+            # This is environment-specific stats - only update environment data
+            if environment in self.environment_protocol_counts:
+                self.environment_protocol_counts[environment] = protocol_counts
 
-        # Update UI with protocol counts
-        if self.ui:
-            self.ui_queue.put(("protocol_counts", protocol_counts, environment))
+                # Update UI with environment-specific data (for environment tabs if they exist)
+                if self.ui:
+                    self.ui_queue.put(("protocol_counts", protocol_counts, environment))
 
     def process_packet(self, packet_dict):
         """Process a packet from the handler and send it to the server"""
@@ -251,13 +257,14 @@ class StablePacketCaptureBackend:
 
                 elif update_type == "protocol_counts" and self.ui:
                     try:
-                        # Make sure UI has the update_protocol_counts method
+                        # **FIXED: Use the right method based on whether it's global or environment-specific**
                         if hasattr(self.ui, 'update_protocol_counts_for_env'):
-                            # Use the new method that supports environments
+                            # Use the new method that distinguishes global vs environment
                             self.ui.update_protocol_counts_for_env(data, additional)
                         elif hasattr(self.ui, 'update_protocol_counts'):
-                            # Fallback to the old method
-                            self.ui.update_protocol_counts(data)
+                            # Fallback to the old method (only call for global updates)
+                            if additional is None:  # Only global updates
+                                self.ui.update_protocol_counts(data)
                         else:
                             print("UI doesn't have protocol count update methods")
                     except Exception as e:
@@ -276,24 +283,9 @@ class StablePacketCaptureBackend:
                     self.packet_count = self.client.packet_count
                     self.connected = self.client.connected
 
-                    # Get protocol counts from client
-                    if hasattr(self.client, 'get_protocol_counts'):
-                        # Get global protocol counts
-                        protocol_counts = self.client.get_protocol_counts()
-                        self.protocol_counts = protocol_counts
-
-                        # Update UI with protocol counts
-                        if self.ui:
-                            self.ui_queue.put(("protocol_counts", protocol_counts, None))
-
-                        # Get environment-specific counts
-                        for env_name in self.environment_protocol_counts.keys():
-                            env_counts = self.client.get_protocol_counts(env_name)
-                            if env_counts:
-                                self.environment_protocol_counts[env_name] = env_counts
-                                # Update UI with environment-specific counts
-                                if self.ui:
-                                    self.ui_queue.put(("protocol_counts", env_counts, env_name))
+                    # **REMOVED: Don't manually get protocol counts here**
+                    # Let the client's callback handle protocol count updates
+                    # This prevents conflicts between manual updates and callback updates
 
                 # Queue UI updates
                 self.ui_queue.put(("packet_count", self.packet_count))
