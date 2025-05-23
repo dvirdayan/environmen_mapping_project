@@ -13,6 +13,7 @@ from client_front import PacketCaptureClientUI
 from pie_chart import integrate_pie_chart_to_ui
 from capture_backend import OptimizedPacketCaptureBackend
 from environment_selector import enhance_client_ui_with_environment_selector
+from admin_dashboard import AdminDashboard  # Import admin dashboard
 
 # Set up debug logging
 DEBUG = True
@@ -44,6 +45,7 @@ def main():
     username = None
     environments = []
     account_info = None
+    is_admin = False  # Track admin status
     server_host = args.server
     server_port = args.port
     distribution_strategy = args.distribution
@@ -82,21 +84,28 @@ def main():
                         env_name = env.get('env_name')
                         env_password = env.get('env_password')
 
+                        # Check if this environment makes the user an admin
+                        if env.get('is_admin', False):
+                            is_admin = True
+                            debug_log(f"User is admin of environment: {env_name}")
+
                         # Log with masked password for security
                         masked_pw = '*' * len(env_password) if env_password else None
-                        debug_log(f"Loading environment: {env_name}, password: {masked_pw}")
+                        debug_log(
+                            f"Loading environment: {env_name}, password: {masked_pw}, is_admin: {env.get('is_admin', False)}")
 
                         environments.append({
                             'env_name': env_name,
                             'env_password': env_password
                         })
 
-                        # Add environment info to account_info
-                        if account_info:
-                            account_info["environment"] = env_name
-                            account_info["is_admin"] = env.get('is_admin', False)
+                    # Update account_info with admin status
+                    if account_info:
+                        account_info["is_admin"] = is_admin
+                        # Use the first environment for display
+                        account_info["environment"] = environments[0].get('env_name') if environments else None
 
-                    print(f"Loaded {len(environments)} environments for user '{username}'")
+                    print(f"Loaded {len(environments)} environments for user '{username}' (Admin: {is_admin})")
                     debug_log(f"Environment names: {[env.get('env_name') for env in environments]}")
                 else:
                     print(f"No environments found for user '{username}', using default")
@@ -119,17 +128,68 @@ def main():
     print(f"Distribution strategy: {distribution_strategy}")
     if account_info:
         print(f"Account info: {account_info}")
+    if is_admin:
+        print("*** ADMIN MODE ENABLED ***")
 
     # Create the root window
     root = tk.Tk()
-    root.title(f"Network Packet Capture - {username or 'Anonymous'}")
+    window_title = f"Network Packet Capture - {username or 'Anonymous'}"
+    if is_admin:
+        window_title += " [ADMIN]"
+    root.title(window_title)
 
     try:
         # Enhance the UI class with pie chart and multi-environment support
         debug_log("Enhancing UI class...")
+
+        # Create a custom enhanced UI class that includes admin support
+        class AdminEnhancedUI(PacketCaptureClientUI):
+            def __init__(self, root):
+                super().__init__(root)
+                self.is_admin = is_admin
+                self.admin_dashboard = None
+
+            def show_admin_dashboard(self):
+                """Show the admin dashboard in a new tab"""
+                if not self.is_admin or self.admin_dashboard:
+                    return
+
+                # Create admin tab
+                admin_frame = ttk.Frame(self.notebook)
+                self.notebook.add(admin_frame, text="🔧 Admin Dashboard")
+
+                # Create admin dashboard
+                self.admin_dashboard = AdminDashboard(admin_frame, backend=self.backend)
+                self.admin_dashboard.pack(fill=tk.BOTH, expand=True)
+
+                # Switch to admin tab
+                self.notebook.select(admin_frame)
+
+                # Request initial admin stats
+                if self.backend:
+                    self.backend.request_admin_stats()
+
+            def update_admin_stats(self, admin_data):
+                """Update admin dashboard with new data"""
+                if self.admin_dashboard:
+                    self.admin_dashboard.update_admin_data(admin_data)
+
+            def set_backend(self, backend):
+                """Override to add admin functionality"""
+                super().set_backend(backend)
+
+                # If admin, show dashboard after UI is ready
+                if self.is_admin:
+                    self.root.after(1000, self.show_admin_dashboard)
+
+                    # Set admin callback
+                    if hasattr(backend, 'set_admin_stats_callback'):
+                        backend.set_admin_stats_callback(self.update_admin_stats)
+
+        # Use the admin-enhanced UI class
         enhanced_ui_class = enhance_client_ui_with_environment_selector(
             enhance_client_ui_with_environments(
-                integrate_pie_chart_to_ui(PacketCaptureClientUI)
+                integrate_pie_chart_to_ui(AdminEnhancedUI)
             )
         )
 
@@ -165,6 +225,9 @@ def main():
         # Log startup information
         if ui:
             ui.log_message(f"Application started - User: {username}")
+            if is_admin:
+                ui.log_message("*** ADMIN MODE ACTIVE ***")
+                ui.log_message("Admin dashboard will load shortly...")
             ui.log_message(f"Environments: {[env.get('env_name') for env in environments]}")
             ui.log_message(f"Distribution strategy: {distribution_strategy}")
             ui.log_message(f"Connecting to server: {server_host}:{server_port}")
@@ -262,6 +325,9 @@ def enhance_client_ui_with_environments(ui_class):
 
 
 if __name__ == "__main__":
+    # Add import for ttk at module level
+    from tkinter import ttk
+
     # Enable exception tracing
     try:
         main()

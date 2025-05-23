@@ -4,6 +4,7 @@ import queue
 import time
 import psutil
 from datetime import datetime
+from admin_dashboard import AdminDashboard
 
 
 class PacketCaptureClientUI:
@@ -17,6 +18,10 @@ class PacketCaptureClientUI:
         self.log_queue = queue.Queue(maxsize=500)  # Reasonable queue size
         self.packet_queue = queue.Queue(maxsize=200)  # Increased for better buffering
         self.backend = None
+
+        # Admin support
+        self.is_admin = False
+        self.admin_dashboard = None
 
         # Protocol count data
         self.protocol_counts = {
@@ -163,6 +168,27 @@ class PacketCaptureClientUI:
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
+    def show_admin_dashboard(self):
+        """Show the admin dashboard in a new tab"""
+        if not self.is_admin or self.admin_dashboard:
+            return
+
+        # Create admin tab
+        admin_frame = ttk.Frame(self.notebook)
+        self.notebook.add(admin_frame, text="Admin Dashboard")
+
+        # Create admin dashboard
+        self.admin_dashboard = AdminDashboard(admin_frame, backend=self.backend)
+        self.admin_dashboard.pack(fill=tk.BOTH, expand=True)
+
+        # Switch to admin tab
+        self.notebook.select(admin_frame)
+
+    def update_admin_stats(self, admin_data):
+        """Update admin dashboard with new data"""
+        if self.admin_dashboard:
+            self.admin_dashboard.update_admin_data(admin_data)
+
     def toggle_capture_mode(self):
         """Toggle between real and test packet capture"""
         if hasattr(self, 'backend') and self.backend and hasattr(self.backend, 'packet_handler'):
@@ -178,13 +204,26 @@ class PacketCaptureClientUI:
     def update_user_info(self, username=None, user_id=None, environment=None, is_admin=False):
         """Update the user information display"""
         if username:
-            self.username_var.set(username)
+            display_username = username
+            if is_admin:
+                display_username += " [ADMIN]"
+            self.username_var.set(display_username)
         if environment:
             self.env_var.set(environment)
 
     def set_backend(self, backend):
         """Set the backend reference"""
         self.backend = backend
+
+        # Check if admin user
+        if hasattr(backend, 'is_admin') and backend.is_admin:
+            self.is_admin = True
+            # Add admin dashboard after UI is ready
+            self.root.after(1000, self.show_admin_dashboard)
+
+            # Set admin callback
+            if hasattr(backend, 'set_admin_stats_callback'):
+                backend.set_admin_stats_callback(self.update_admin_stats)
 
         # Update user info from backend
         if hasattr(backend, 'username') and backend.username:
@@ -198,7 +237,8 @@ class PacketCaptureClientUI:
 
             self.update_user_info(
                 username=backend.username,
-                environment=primary_env
+                environment=primary_env,
+                is_admin=self.is_admin
             )
 
     def populate_interfaces(self):

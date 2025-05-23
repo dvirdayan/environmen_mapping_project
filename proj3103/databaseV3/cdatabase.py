@@ -139,9 +139,9 @@ class CredentialDatabase:
 
         for row in results:
             env_name = row[0]
+            env_password = row[1]
 
             # For each environment, check if this user is the original creator
-            # We'll assume the original creator is the admin of the environment
             self.cursor.execute("""
                 SELECT MIN(rowid) 
                 FROM environments 
@@ -152,31 +152,29 @@ class CredentialDatabase:
             first_entry = self.cursor.fetchone()
 
             # Get the user_id of the first entry for this environment
+            is_creator = False
             if first_entry:
                 self.cursor.execute("""
                     SELECT user_id
                     FROM environments
                     WHERE rowid = ?
-                """, first_entry)
+                """, (first_entry[0],))
 
                 creator_result = self.cursor.fetchone()
                 is_creator = creator_result[0] == user_id if creator_result else False
-            else:
-                is_creator = False
 
-            # User is admin of this environment if they're the creator
-            is_admin_of_env = is_creator
+            # User is admin of this environment if:
+            # 1. They're a system admin (registered as admin), OR
+            # 2. They're the creator of this environment
+            is_admin_of_env = is_system_admin or is_creator
 
             environments.append({
                 "env_name": env_name,
-                "env_password": row[1],
+                "env_password": env_password,
                 "is_admin": is_admin_of_env
             })
 
         return environments
-
-        results = self.cursor.fetchall()
-        return [{"env_name": row[0], "env_password": row[1], "is_admin": bool(row[2])} for row in results]
 
     def get_admin_environments(self, user_id: int) -> List[Dict[str, str]]:
         """Get environments created by a specific admin user."""

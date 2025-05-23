@@ -64,6 +64,10 @@ class PacketServer:
         self.processed_packets_lock = threading.Lock()
         self.last_packet_id_cleanup = time.time()
 
+        # Admin tracking
+        self.admin_clients = set()
+        self.client_connect_times = {}
+
     def _send_stats_periodically(self):
         """Send protocol statistics to all connected clients periodically"""
         while self.running:
@@ -144,6 +148,24 @@ class PacketServer:
                 except Exception as e:
                     print(f"[SERVER] Error preparing stats for {client_info['username']}: {e}")
 
+            # Send admin stats to admin clients every 2 seconds
+            if int(time.time()) % 2 == 0:  # Every 2 seconds
+                for username in list(self.admin_clients):
+                    try:
+                        # Find client address
+                        client_addr = None
+                        with self.clients_lock:
+                            for addr, uname in self.active_connections.items():
+                                if uname == username:
+                                    client_addr = addr
+                                    break
+
+                        if client_addr:
+                            request_data = {'type': 'admin_stats_request'}
+                            self.handle_admin_request(request_data, client_addr)
+                    except Exception as e:
+                        print(f"[SERVER] Error sending admin stats to {username}: {e}")
+
     def register_ui_callback(self, callback):
         """Register a callback function that will be called when data changes"""
         self.ui_update_callback = callback
@@ -192,6 +214,64 @@ class PacketServer:
         else:
             return 'Other'
 
+    def handle_admin_request(self, request_data, client_addr):
+        """Handle admin statistics requests"""
+        username = None
+        with self.clients_lock:
+            username = self.active_connections.get(client_addr)
+
+        if not username or username not in self.admin_clients:
+            return  # Not an admin
+
+        # Prepare admin data
+        admin_data = {
+            'type': 'admin_stats',
+            'data': {
+                'clients': {},
+                'global_protocols': {},
+                'environments': {}
+            }
+        }
+
+        # Gather client data
+        with self.clients_lock:
+            for addr, uname in self.active_connections.items():
+                if uname in self.clients_by_username:
+                    client_info = self.clients_by_username[uname].copy()
+                    # Add connection info
+                    client_info['ip'] = addr[0]
+                    client_info['port'] = addr[1]
+                    client_info['connect_time'] = self.client_connect_times.get(uname, 0)
+                    # Remove socket object
+                    client_info.pop('socket', None)
+                    admin_data['data']['clients'][f"{addr[0]}:{addr[1]}"] = client_info
+
+        # Add global protocol counts
+        with self.protocol_lock:
+            admin_data['data']['global_protocols'] = self.protocol_counts.copy()
+
+        # Add environment data
+        with self.environment_lock:
+            for env_name, env_data in self.environments.items():
+                admin_data['data']['environments'][env_name] = {
+                    'clients': list(env_data['clients'].keys()),
+                    'protocol_counts': env_data['protocol_counts'].copy(),
+                    'packet_count': env_data['packet_count']
+                }
+
+        # Send to requesting admin
+        try:
+            socket_conn = None
+            with self.clients_lock:
+                if username in self.clients_by_username:
+                    socket_conn = self.clients_by_username[username].get('socket')
+
+            if socket_conn:
+                socket_conn.sendall((json.dumps(admin_data) + '\n').encode('utf-8'))
+                print(f"[SERVER] Sent admin stats to {username}")
+        except Exception as e:
+            print(f"[SERVER] Error sending admin stats: {e}")
+
     def process_packet(self, packet_data, client_addr, environments=None):
         """
         Process a packet and update counts for specified environments
@@ -206,6 +286,11 @@ class PacketServer:
         """
         try:
             packet = json.loads(packet_data)
+
+            # Handle admin stats request
+            if packet.get('type') == 'admin_stats_request':
+                self.handle_admin_request(packet, client_addr)
+                return True
 
             # Skip system/heartbeat messages
             if packet.get('type') in ['heartbeat', 'stats', 'ack']:
@@ -401,6 +486,7 @@ class PacketServer:
         buffer = ""
         username = None
         verified_environments = []  # List of environments this client has access to
+        is_admin = False
 
         try:
             # Make socket non-blocking for timeout handling
@@ -432,6 +518,15 @@ class PacketServer:
                                     username = f"user_{addr[0]}_{addr[1]}"  # Fallback username
 
                                 print(f"[SERVER] Client {addr} attempting authentication as user: {username}")
+
+                                # Check if admin user
+                                if auth_json.get('is_admin'):
+                                    is_admin = True
+                                    self.admin_clients.add(username)
+                                    print(f"[SERVER] Admin user {username} connected")
+
+                                # Track connection time
+                                self.client_connect_times[username] = time.time()
 
                                 # Handle multiple environments
                                 environments = auth_json.get('environments', [])
@@ -596,6 +691,11 @@ class PacketServer:
 
                     # Remove from active connections
                     del self.active_connections[addr]
+
+            # Remove from admin clients if admin
+            if username and username in self.admin_clients:
+                self.admin_clients.remove(username)
+                print(f"[SERVER] Admin user {username} disconnected")
 
             # Update environment status
             with self.environment_lock:

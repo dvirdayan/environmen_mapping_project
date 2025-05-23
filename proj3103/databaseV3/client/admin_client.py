@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""
+Simplified client that ensures admin dashboard is visible
+"""
+
+import tkinter as tk
+from tkinter import ttk
+import sys
+import os
+import json
+import argparse
+
+# Add the current directory to the path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+from client_front import PacketCaptureClientUI
+from capture_backend import OptimizedPacketCaptureBackend
+from admin_dashboard import AdminDashboard
+
+
+class AdminEnabledClientUI(PacketCaptureClientUI):
+    """Client UI with guaranteed admin dashboard"""
+
+    def __init__(self, root, force_admin=False):
+        super().__init__(root)
+        self.force_admin = force_admin
+        self.admin_dashboard = None
+
+        # If force_admin is True, show admin dashboard immediately
+        if self.force_admin:
+            self.root.after(100, self.show_admin_dashboard_forced)
+
+    def show_admin_dashboard_forced(self):
+        """Force show the admin dashboard regardless of user status"""
+        if self.admin_dashboard:
+            return  # Already shown
+
+        print("[UI] Force-showing admin dashboard...")
+
+        # Create admin tab
+        admin_frame = ttk.Frame(self.notebook)
+        self.notebook.add(admin_frame, text="🔧 Admin Dashboard")
+
+        # Create admin dashboard
+        self.admin_dashboard = AdminDashboard(admin_frame, backend=self.backend)
+        self.admin_dashboard.pack(fill=tk.BOTH, expand=True)
+
+        # Make it the active tab
+        self.notebook.select(admin_frame)
+
+        self.log_message("Admin dashboard loaded (forced mode)")
+        print("[UI] Admin dashboard created successfully")
+
+    def set_backend(self, backend):
+        """Override to ensure admin functionality"""
+        super().set_backend(backend)
+
+        # Check if admin based on backend
+        if hasattr(backend, 'is_admin') and backend.is_admin:
+            print(f"[UI] Backend reports admin status: {backend.is_admin}")
+            self.is_admin = True
+            # Show admin dashboard after a short delay
+            self.root.after(500, self.show_admin_dashboard)
+
+            # Set admin callback
+            if hasattr(backend, 'set_admin_stats_callback'):
+                backend.set_admin_stats_callback(self.update_admin_stats)
+        elif self.force_admin:
+            print("[UI] Admin forced via command line")
+            self.is_admin = True
+
+    def show_admin_dashboard(self):
+        """Show the admin dashboard in a new tab"""
+        if self.admin_dashboard:
+            return  # Already shown
+
+        print("[UI] Creating admin dashboard...")
+
+        # Create admin tab
+        admin_frame = ttk.Frame(self.notebook)
+        self.notebook.add(admin_frame, text="🔧 Admin Dashboard")
+
+        # Create admin dashboard
+        self.admin_dashboard = AdminDashboard(admin_frame, backend=self.backend)
+        self.admin_dashboard.pack(fill=tk.BOTH, expand=True)
+
+        # Don't automatically switch to it
+        self.log_message("Admin dashboard loaded successfully")
+        print("[UI] Admin dashboard created")
+
+        # Request initial stats if backend is available
+        if self.backend:
+            self.backend.request_admin_stats()
+
+    def update_admin_stats(self, admin_data):
+        """Update admin dashboard with new data"""
+        if self.admin_dashboard:
+            self.admin_dashboard.update_admin_data(admin_data)
+        else:
+            print("[UI] Admin stats received but no dashboard to display them")
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Admin-Enabled Packet Capture Client')
+    parser.add_argument('--config', type=str, help='Path to user config file')
+    parser.add_argument('--force-admin', action='store_true',
+                        help='Force show admin dashboard regardless of user status')
+    parser.add_argument('--server', type=str, default="localhost", help='Server hostname or IP')
+    parser.add_argument('--port', type=int, default=9007, help='Server port')
+    args = parser.parse_args()
+
+    # Default settings
+    username = "TestUser"
+    environments = [{'env_name': 'default', 'env_password': 'default_password'}]
+    account_info = None
+    is_admin = args.force_admin  # Start with force_admin flag
+
+    print(f"Starting client with force_admin={args.force_admin}")
+
+    # Load config if provided
+    if args.config and os.path.exists(args.config):
+        try:
+            print(f"Loading config from: {args.config}")
+            with open(args.config, 'r') as f:
+                config = json.load(f)
+
+            username = config.get('username', username)
+            user_id = config.get('user_id')
+
+            # Check for admin in environments
+            config_environments = config.get('environments', [])
+            if config_environments:
+                environments = config_environments
+                # Check if any environment has admin
+                for env in config_environments:
+                    if env.get('is_admin', False):
+                        is_admin = True
+                        print(f"User is admin of environment: {env.get('env_name')}")
+
+            # Create account info
+            if user_id:
+                account_info = {
+                    "user_id": user_id,
+                    "username": username,
+                    "is_admin": is_admin
+                }
+
+            print(f"Loaded user: {username} (Admin: {is_admin})")
+
+        except Exception as e:
+            print(f"Error loading config: {e}")
+
+    # Create root window
+    root = tk.Tk()
+    window_title = f"Packet Capture - {username}"
+    if is_admin or args.force_admin:
+        window_title += " [ADMIN]"
+    root.title(window_title)
+    root.geometry("900x700")
+
+    # Create UI with admin support
+    print("Creating UI...")
+    ui = AdminEnabledClientUI(root, force_admin=args.force_admin)
+
+    # Create backend
+    print("Creating backend...")
+    backend = OptimizedPacketCaptureBackend(ui=ui)
+
+    # Configure backend
+    backend.configure(
+        server_host=args.server,
+        server_port=args.port,
+        username=username,
+        environments=environments,
+        account_info=account_info
+    )
+
+    # Connect UI and backend
+    ui.set_backend(backend)
+
+    # Log startup info
+    ui.log_message(f"Client started - User: {username}")
+    if is_admin or args.force_admin:
+        ui.log_message("*** ADMIN MODE ACTIVE ***")
+        if args.force_admin:
+            ui.log_message("(Admin dashboard forced via command line)")
+    ui.log_message(f"Server: {args.server}:{args.port}")
+
+    # Start the main loop
+    print("Starting main loop...")
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
