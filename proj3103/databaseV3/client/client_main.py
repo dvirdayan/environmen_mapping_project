@@ -3,21 +3,19 @@ import sys
 import os
 import json
 import argparse
-import traceback  # Added for detailed error tracing
-
-# Import the UI and the pie chart integration
-from client_front import PacketCaptureClientUI
-from pie_chart import integrate_pie_chart_to_ui
-from capture_backend import StablePacketCaptureBackend
-from capture_upgrades import upgrade_to_real_capture
-from packet_handler import SimplePacketHandler
-from environment_selector import enhance_client_ui_with_environment_selector
+import traceback
 
 # Add the current directory to the path to ensure modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# Import the UI and integration components
+from client_front import PacketCaptureClientUI
+from pie_chart import integrate_pie_chart_to_ui
+from capture_backend import OptimizedPacketCaptureBackend
+from environment_selector import enhance_client_ui_with_environment_selector
+
 # Set up debug logging
-DEBUG = True  # Set to True to enable detailed logging
+DEBUG = True
 
 
 def debug_log(message):
@@ -126,55 +124,67 @@ def main():
     root = tk.Tk()
     root.title(f"Network Packet Capture - {username or 'Anonymous'}")
 
-    # Enhance the UI class with pie chart and multi-environment support
-    EnhancedPacketCaptureClientUI = enhance_client_ui_with_environment_selector(
-        enhance_client_ui_with_environments(
-            integrate_pie_chart_to_ui(PacketCaptureClientUI)
+    try:
+        # Enhance the UI class with pie chart and multi-environment support
+        debug_log("Enhancing UI class...")
+        enhanced_ui_class = enhance_client_ui_with_environment_selector(
+            enhance_client_ui_with_environments(
+                integrate_pie_chart_to_ui(PacketCaptureClientUI)
+            )
         )
-    )
 
-    # Create the enhanced UI
-    ui = EnhancedPacketCaptureClientUI(root)
+        # Create the enhanced UI
+        debug_log("Creating UI instance...")
+        ui = enhanced_ui_class(root)
 
-    # Create the backend with debug mode enabled
-    backend = StablePacketCaptureBackend(ui=ui)
+        # Create the backend
+        debug_log("Creating backend instance...")
+        backend = OptimizedPacketCaptureBackend(ui=ui)
 
-    # Configure with the environment info and account info
-    debug_log("Configuring backend...")
-    backend.configure(
-        capture_interface=None,  # Will be selected in UI
-        server_host=server_host,
-        server_port=server_port,
-        username=username,
-        environments=environments,
-        account_info=account_info,
-        distribution_strategy=distribution_strategy
-    )
+        # Configure with the environment info and account info
+        debug_log("Configuring backend...")
+        backend.configure(
+            capture_interface=None,  # Will be selected in UI
+            server_host=server_host,
+            server_port=server_port,
+            username=username,
+            environments=environments,
+            account_info=account_info,
+            distribution_strategy=distribution_strategy
+        )
 
-    # Log the configuration details
-    print(f"Configured backend with: username={username}, environments={[env.get('env_name') for env in environments]}")
-    print(f"Account info: {account_info}")
+        # Log the configuration details
+        print(
+            f"Configured backend with: username={username}, environments={[env.get('env_name') for env in environments]}")
+        print(f"Account info: {account_info}")
 
-    # Connect UI and backend
-    debug_log("Setting backend in UI...")
-    ui.set_backend(backend)
+        # Connect UI and backend
+        debug_log("Setting backend in UI...")
+        ui.set_backend(backend)
 
-    # Optional: Set a timer to upgrade to real packet capture after connection stability is confirmed
-    # This will switch from test packets to real packet capture after 10 seconds
-    debug_log("Scheduling upgrade to real packet capture...")
-    root.after(10000, lambda: upgrade_to_real_capture(backend))
+        # Log startup information
+        if ui:
+            ui.log_message(f"Application started - User: {username}")
+            ui.log_message(f"Environments: {[env.get('env_name') for env in environments]}")
+            ui.log_message(f"Distribution strategy: {distribution_strategy}")
+            ui.log_message(f"Connecting to server: {server_host}:{server_port}")
+            if DEBUG:
+                ui.log_message("DEBUG MODE ENABLED - Check console for detailed logs")
 
-    # Log startup information
-    if ui:
-        ui.log_message(f"Application started - User: {username}")
-        ui.log_message(f"Environments: {[env.get('env_name') for env in environments]}")
-        ui.log_message(f"Distribution strategy: {distribution_strategy}")
-        ui.log_message(f"Connecting to server: {server_host}:{server_port}")
-        ui.log_message("DEBUG MODE ENABLED - Check console for detailed logs")
+        # Start the main loop
+        debug_log("Starting main loop...")
+        root.mainloop()
 
-    # Start the main loop
-    debug_log("Starting main loop...")
-    root.mainloop()
+    except Exception as e:
+        print(f"Error during UI setup: {e}")
+        debug_log(traceback.format_exc())
+
+        # Try to show a simple error dialog
+        try:
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to start application: {e}")
+        except:
+            pass
 
 
 def enhance_client_ui_with_environments(ui_class):
@@ -182,7 +192,11 @@ def enhance_client_ui_with_environments(ui_class):
     debug_log("Enhancing UI with multi-environment support")
 
     # Store original update protocol counts method
-    original_update_protocol_counts = ui_class.update_protocol_counts
+    if hasattr(ui_class, 'update_protocol_counts'):
+        original_update_protocol_counts = ui_class.update_protocol_counts
+    else:
+        def original_update_protocol_counts(self, protocol_counts):
+            pass
 
     # Add a new method for environment-specific protocol counts
     def update_protocol_counts_for_env(self, protocol_counts, environment=None):
@@ -190,7 +204,7 @@ def enhance_client_ui_with_environments(ui_class):
         # Update global counts using the original method
         original_update_protocol_counts(self, protocol_counts)
 
-        # If environment is specified, check if we have environment tabs
+        # If environment is specified and we have environment tabs
         if environment and hasattr(self, 'environment_tabs'):
             # If this environment doesn't have a tab yet, create one
             if environment not in self.environment_tabs:
@@ -207,84 +221,17 @@ def enhance_client_ui_with_environments(ui_class):
     def process_packet_with_environments(self, packet_data, environments=None):
         """Process packet with environment information"""
         # First call the original process_packet method
-        self.process_packet(packet_data)
+        if hasattr(self, 'process_packet'):
+            self.process_packet(packet_data)
 
         # If environments are specified, log them
-        if environments:
+        if environments and hasattr(self, 'log_message'):
             env_str = ", ".join(environments)
             self.log_message(f"Packet {packet_data.get('packet_id', 'unknown')} sent to environments: {env_str}")
-
-    # Add method to create environment tabs
-    def create_environment_tab(self, environment):
-        """Create a new tab for an environment"""
-        if not hasattr(self, 'environment_tabs'):
-            self.environment_tabs = {}
-
-        # Skip if this environment already has a tab
-        if environment in self.environment_tabs:
-            return
-
-        # Find the notebook by searching through the UI hierarchy
-        notebook = None
-        # First look in the root window's children
-        for child in self.root.winfo_children():
-            # Look for frames that might contain our notebook
-            if isinstance(child, tk.Frame) or isinstance(child, tk.Frame):
-                # Check this frame's children for the notebook
-                for grandchild in child.winfo_children():
-                    # Look for the notebook in grandchildren
-                    if isinstance(grandchild, tk.Notebook):
-                        notebook = grandchild
-                        break
-                    # Also check one level deeper if needed
-                    if isinstance(grandchild, (tk.Frame, tk.Frame, tk.LabelFrame, tk.LabelFrame)):
-                        for great_grandchild in grandchild.winfo_children():
-                            if isinstance(great_grandchild, tk.Notebook):
-                                notebook = great_grandchild
-                                break
-                if notebook:
-                    break
-
-        if not notebook:
-            self.log_message(f"Could not find notebook to add environment tab: {environment}")
-            return
-
-        try:
-            # Import ttk inside function to avoid potential import issues
-            from tkinter import ttk
-
-            # Create a new frame for this environment
-            env_frame = ttk.Frame(notebook, padding="10")
-            notebook.add(env_frame, text=f"Env: {environment}")
-
-            # Create protocol count labels for this environment
-            protocol_frame = ttk.LabelFrame(env_frame, text=f"Protocol Distribution - {environment}", padding="5")
-            protocol_frame.pack(fill=tk.X, pady=5)
-
-            protocol_labels = {}
-            for i, protocol in enumerate(['TCP', 'UDP', 'HTTP', 'HTTPS', 'FTP', 'SMTP', 'Other']):
-                ttk.Label(protocol_frame, text=f"{protocol}:").grid(row=i, column=0, sticky=tk.W, padx=5, pady=2)
-                var = tk.StringVar(value="0")
-                protocol_labels[protocol] = var
-                ttk.Label(protocol_frame, textvariable=var, width=8).grid(row=i, column=1, sticky=tk.E, padx=5, pady=2)
-
-            # Store the labels in the environment tabs dictionary
-            self.environment_tabs[environment] = {
-                'frame': env_frame,
-                'protocol_labels': protocol_labels
-            }
-
-            self.log_message(f"Created environment tab for: {environment}")
-        except Exception as e:
-            self.log_message(f"Error creating environment tab: {str(e)}")
-            if DEBUG:
-                print(f"[DEBUG] Error in create_environment_tab: {str(e)}")
-                print(traceback.format_exc())
 
     # Update the UI class with the new methods
     ui_class.update_protocol_counts_for_env = update_protocol_counts_for_env
     ui_class.process_packet_with_environments = process_packet_with_environments
-    ui_class.create_environment_tab = create_environment_tab
 
     # Store the original set_backend method
     original_set_backend = None
@@ -303,16 +250,11 @@ def enhance_client_ui_with_environments(ui_class):
             # Basic implementation if original doesn't exist
             self.backend = backend
 
-        # Create tabs for each environment
+        # Create tabs for each environment if supported
         if hasattr(backend, 'get_environments'):
             environments = backend.get_environments()
             if DEBUG:
                 print(f"[DEBUG] Retrieved environments from backend: {environments}")
-            for env in environments:
-                if hasattr(self, 'create_environment_tab'):
-                    if DEBUG:
-                        print(f"[DEBUG] Creating tab for environment: {env}")
-                    self.create_environment_tab(env)
 
     ui_class.set_backend = enhanced_set_backend
 

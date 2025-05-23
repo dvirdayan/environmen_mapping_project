@@ -14,9 +14,9 @@ class PacketCaptureClientUI:
         self.root.minsize(800, 600)
 
         self.capture_running = False
-        self.log_queue = queue.Queue()
-        self.packet_queue = queue.Queue(maxsize=1000)  # Limit queue size to prevent memory issues
-        self.backend = None  # Will be set by main.py
+        self.log_queue = queue.Queue(maxsize=500)  # Reasonable queue size
+        self.packet_queue = queue.Queue(maxsize=200)  # Increased for better buffering
+        self.backend = None
 
         # Protocol count data
         self.protocol_counts = {
@@ -29,19 +29,16 @@ class PacketCaptureClientUI:
             'Other': 0
         }
 
-        # **FIXED: Add update throttling for UI**
-        self.last_protocol_update = 0
-        self.update_lock = False
-        self.pie_chart_update_lock = False
+        # Optimized update intervals - much more responsive
+        self.last_ui_update = 0
+        self.ui_update_interval = 0.5  # Update UI every 500ms (was 2 seconds)
 
         # Setup UI components
         self.setup_ui()
 
-        # Start log consumer
+        # Start processing with better responsiveness
         self.start_log_consumer()
-
-        # Start packet processing
-        self.start_processing_packets()  # Make sure this gets called on init
+        self.start_processing_packets()
 
         # When closing the window
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -49,7 +46,7 @@ class PacketCaptureClientUI:
         # Populate interface list
         self.populate_interfaces()
 
-        # Add initial log message to confirm logging works
+        # Add initial log message
         self.log_message("Application started. Logging system initialized.")
 
     def setup_ui(self):
@@ -57,15 +54,13 @@ class PacketCaptureClientUI:
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # User information section with grid layout
+        # User information section
         user_info_frame = ttk.LabelFrame(main_frame, text="User Information", padding="10")
         user_info_frame.pack(fill=tk.X, pady=5)
 
-        # Create a grid layout with 4 columns
         info_grid = ttk.Frame(user_info_frame)
         info_grid.pack(fill=tk.X, pady=5, padx=5)
 
-        # Column headers and labels
         ttk.Label(info_grid, text="Username:", anchor=tk.E).grid(row=0, column=0, sticky=tk.E, padx=(5, 2), pady=2)
         self.username_var = tk.StringVar(value="Not logged in")
         ttk.Label(info_grid, textvariable=self.username_var).grid(row=0, column=1, sticky=tk.W, padx=(0, 20), pady=2)
@@ -74,25 +69,10 @@ class PacketCaptureClientUI:
         self.env_var = tk.StringVar(value="Not connected")
         ttk.Label(info_grid, textvariable=self.env_var).grid(row=0, column=3, sticky=tk.W, padx=(0, 5), pady=2)
 
-        ttk.Label(info_grid, text="User ID:", anchor=tk.E).grid(row=1, column=0, sticky=tk.E, padx=(5, 2), pady=2)
-        self.userid_var = tk.StringVar(value="N/A")
-        ttk.Label(info_grid, textvariable=self.userid_var).grid(row=1, column=1, sticky=tk.W, padx=(0, 20), pady=2)
-
-        ttk.Label(info_grid, text="Role:", anchor=tk.E).grid(row=1, column=2, sticky=tk.E, padx=(5, 2), pady=2)
-        self.role_var = tk.StringVar(value="N/A")
-        ttk.Label(info_grid, textvariable=self.role_var).grid(row=1, column=3, sticky=tk.W, padx=(0, 5), pady=2)
-
-        # Set column weights to ensure proper spacing
-        info_grid.columnconfigure(0, weight=1)  # Username label
-        info_grid.columnconfigure(1, weight=2)  # Username value
-        info_grid.columnconfigure(2, weight=1)  # Environment label
-        info_grid.columnconfigure(3, weight=2)  # Environment value
-
-        # Create top frame for connection settings
+        # Connection settings
         connection_frame = ttk.LabelFrame(main_frame, text="Connection Settings", padding="10")
         connection_frame.pack(fill=tk.X, pady=5)
 
-        # Network interface selection
         ttk.Label(connection_frame, text="Network Interface:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.interface_var = tk.StringVar()
         self.interface_combo = ttk.Combobox(connection_frame, textvariable=self.interface_var, state="readonly",
@@ -101,7 +81,6 @@ class PacketCaptureClientUI:
         ttk.Button(connection_frame, text="Refresh", command=self.populate_interfaces).grid(row=0, column=2, padx=5,
                                                                                             pady=5)
 
-        # Server settings
         ttk.Label(connection_frame, text="Server Host:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.server_host_var = tk.StringVar(value="176.9.45.249")
         ttk.Entry(connection_frame, textvariable=self.server_host_var, width=30).grid(row=1, column=1, sticky=tk.W,
@@ -124,11 +103,17 @@ class PacketCaptureClientUI:
 
         ttk.Button(control_frame, text="Clear Logs", command=self.clear_logs).pack(side=tk.LEFT, padx=5)
 
+        # Toggle between real and test packet capture
+        self.capture_mode_var = tk.StringVar(value="Real Capture")
+        self.capture_mode_button = ttk.Button(control_frame, text="Real Capture",
+                                              command=self.toggle_capture_mode)
+        self.capture_mode_button.pack(side=tk.LEFT, padx=5)
+
         # Stats frame
         stats_frame = ttk.LabelFrame(main_frame, text="Statistics", padding="10")
         stats_frame.pack(fill=tk.X, pady=5)
 
-        # Left side - basic stats
+        # Basic stats
         basic_stats_frame = ttk.Frame(stats_frame)
         basic_stats_frame.grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
 
@@ -143,11 +128,10 @@ class PacketCaptureClientUI:
         self.status_label.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         self.update_status_indicator("Disconnected")
 
-        # Right side - protocol counts
+        # Protocol counts
         protocol_frame = ttk.LabelFrame(stats_frame, text="Protocol Distribution", padding="5")
         protocol_frame.grid(row=0, column=1, sticky=tk.E, padx=5, pady=5)
 
-        # Create protocol count labels
         self.protocol_labels = {}
         for i, protocol in enumerate(['TCP', 'UDP', 'HTTP', 'HTTPS', 'FTP', 'SMTP', 'Other']):
             ttk.Label(protocol_frame, text=f"{protocol}:").grid(row=i, column=0, sticky=tk.W, padx=5, pady=2)
@@ -155,107 +139,67 @@ class PacketCaptureClientUI:
             self.protocol_labels[protocol] = var
             ttk.Label(protocol_frame, textvariable=var, width=8).grid(row=i, column=1, sticky=tk.E, padx=5, pady=2)
 
-        # Setup notebook with tabs
-        notebook = ttk.Notebook(main_frame)
-        notebook.pack(fill=tk.BOTH, expand=True, pady=5)
+        # Create notebook for additional tabs (like pie chart)
+        self.notebook = ttk.Notebook(main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=5)
 
         # Log tab
-        log_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(log_frame, text="Logs")
+        log_tab = ttk.Frame(self.notebook)
+        self.notebook.add(log_tab, text="Logs")
 
-        # Create log text area with white background for better visibility
-        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15, background="white")
+        log_frame = ttk.LabelFrame(log_tab, text="Application Logs", padding="10")
+        log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        self.log_text = scrolledtext.ScrolledText(log_frame, wrap=tk.WORD, height=15,
+                                                  background="white")
         self.log_text.pack(fill=tk.BOTH, expand=True)
-        self.log_text.config(state=tk.NORMAL)  # Make sure it's initially NORMAL so we can write to it
-        self.log_text.insert(tk.END, "Log system initialized...\n")  # Add initial text
-        self.log_text.see(tk.END)  # Scroll to end
-        self.log_text.config(state=tk.DISABLED)  # Then disable it
+        self.log_text.config(state=tk.NORMAL)
+        self.log_text.insert(tk.END, "Log system initialized...\n")
+        self.log_text.see(tk.END)
+        self.log_text.config(state=tk.DISABLED)
 
-        # Packet tab
-        packet_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(packet_frame, text="Packet Data")
-
-        # Create packet treeview
-        columns = ("timestamp", "protocol", "source", "destination", "length")
-        self.packet_tree = ttk.Treeview(packet_frame, columns=columns, show="headings")
-
-        # Define headings
-        self.packet_tree.heading("timestamp", text="Timestamp")
-        self.packet_tree.heading("protocol", text="Protocol")
-        self.packet_tree.heading("source", text="Source")
-        self.packet_tree.heading("destination", text="Destination")
-        self.packet_tree.heading("length", text="Length")
-
-        # Define columns
-        self.packet_tree.column("timestamp", width=150)
-        self.packet_tree.column("protocol", width=100)
-        self.packet_tree.column("source", width=200)
-        self.packet_tree.column("destination", width=200)
-        self.packet_tree.column("length", width=100)
-
-        # Add scrollbar to treeview
-        tree_scrollbar = ttk.Scrollbar(packet_frame, orient="vertical", command=self.packet_tree.yview)
-        self.packet_tree.configure(yscroll=tree_scrollbar.set)
-
-        # Pack treeview and scrollbar
-        self.packet_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Status bar at bottom
+        # Status bar
         self.status_var = tk.StringVar(value="Ready")
         status_bar = ttk.Label(main_frame, textvariable=self.status_var, relief=tk.SUNKEN, anchor=tk.W)
         status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def toggle_capture_mode(self):
+        """Toggle between real and test packet capture"""
+        if hasattr(self, 'backend') and self.backend and hasattr(self.backend, 'packet_handler'):
+            if hasattr(self.backend.packet_handler, 'use_real_capture'):
+                current_mode = self.backend.packet_handler.use_real_capture
+                new_mode = not current_mode
+                self.backend.packet_handler.set_real_capture(new_mode)
+
+                mode_text = "Real Capture" if new_mode else "Test Packets"
+                self.capture_mode_button.config(text=mode_text)
+                self.log_message(f"Switched to: {mode_text}")
 
     def update_user_info(self, username=None, user_id=None, environment=None, is_admin=False):
         """Update the user information display"""
         if username:
             self.username_var.set(username)
-
-        if user_id:
-            self.userid_var.set(str(user_id))
-
         if environment:
             self.env_var.set(environment)
-
-        # Set the role based on admin status
-        self.role_var.set("Admin" if is_admin else "Member")
 
     def set_backend(self, backend):
         """Set the backend reference"""
         self.backend = backend
 
-        # Debug print
-        print("Setting backend with data:")
-        print(f"Username: {getattr(backend, 'username', 'Not set')}")
-        print(f"Account info: {getattr(backend, 'account_info', 'Not set')}")
-
         # Update user info from backend
         if hasattr(backend, 'username') and backend.username:
-            account_info = getattr(backend, 'account_info', {}) or {}
+            # Get environment names from the backend
+            env_names = []
+            if hasattr(backend, 'environments') and backend.environments:
+                env_names = [env.get('env_name') for env in backend.environments if env.get('env_name')]
 
-            # Debug print
-            print(f"Extracted account_info: {account_info}")
+            # Use the first environment for display
+            primary_env = env_names[0] if env_names else "default"
 
-            # Extract user information
-            user_id = None
-            is_admin = False
-            env_name = getattr(backend, 'env_name', 'Not set')
-
-            if isinstance(account_info, dict):
-                user_id = account_info.get('user_id')
-                is_admin = account_info.get('is_admin', False)
-                print(f"Extracted user_id: {user_id}, is_admin: {is_admin}")
-
-            # Update the UI with user information
-            self.log_message(f"Updating UI with: username={backend.username}, user_id={user_id}, env={env_name}")
             self.update_user_info(
                 username=backend.username,
-                user_id=user_id,
-                environment=env_name,
-                is_admin=is_admin
+                environment=primary_env
             )
-        else:
-            self.log_message("No username found in backend when setting backend")
 
     def populate_interfaces(self):
         """Populate the interface dropdown with available network interfaces"""
@@ -289,43 +233,11 @@ class PacketCaptureClientUI:
         self.capture_running = True
         self.update_status_indicator("Connecting...")
 
-        # Update environment information in the UI again to ensure it's displayed
-        if hasattr(self.backend, 'username') and self.backend.username:
-            account_info = getattr(self.backend, 'account_info', {}) or {}
-            user_id = None
-            is_admin = False
-
-            if isinstance(account_info, dict):
-                user_id = account_info.get('user_id')
-                is_admin = account_info.get('is_admin', False)
-
-            # Get environment names from the backend
-            env_names = []
-            if hasattr(self.backend, 'environments') and self.backend.environments:
-                env_names = [env.get('env_name') for env in self.backend.environments if env.get('env_name')]
-
-            # Create environment string for display
-            env_str = "default"
-            if env_names:
-                env_str = ", ".join(env_names)
-
-            # Use the first environment for backward compatibility with UI display
-            primary_env = env_names[0] if env_names else "default"
-
-            self.log_message(f"Starting capture as: {self.backend.username} in environments: {env_str}")
-            self.update_user_info(
-                username=self.backend.username,
-                user_id=user_id,
-                environment=primary_env,  # Just use the first environment for the UI display
-                is_admin=is_admin
-            )
-
         # Configure and start the backend
         self.backend.configure(
             capture_interface=interface,
             server_host=server_host,
             server_port=server_port
-            # Note: keep existing username and env data that was loaded from config
         )
         self.backend.start()
 
@@ -359,6 +271,7 @@ class PacketCaptureClientUI:
 
     def update_connection_status(self, is_connected):
         """Update the connection status based on backend state"""
+        # More responsive status updates
         if is_connected:
             self.update_status_indicator("Connected")
         else:
@@ -366,169 +279,116 @@ class PacketCaptureClientUI:
 
     def update_packet_count(self, count):
         """Update the packet count display"""
+        # More responsive packet count updates
         self.packet_count_var.set(str(count))
 
     def update_protocol_counts(self, protocol_counts):
         """Update the protocol distribution display"""
-        # **FIXED: Add throttling and locking to prevent flashing**
         current_time = time.time()
-
-        # Throttle updates to prevent flashing (max once per second)
-        if current_time - self.last_protocol_update < 1.0:
+        if current_time - self.last_ui_update < 0.2:
             return
-
-        # Prevent overlapping updates
-        if self.update_lock:
-            return
-
-        self.update_lock = True
-        self.last_protocol_update = current_time
-
-        try:
-            # Store current protocol counts
-            self.protocol_counts = protocol_counts
-
-            # Update the labels with new values
-            for protocol, count in protocol_counts.items():
-                if protocol in self.protocol_labels:
-                    self.protocol_labels[protocol].set(str(count))
-
-            # Force update to make changes visible immediately
-            self.root.update_idletasks()
-
-        finally:
-            self.update_lock = False
+        self.last_ui_update = current_time
+        self.protocol_counts = protocol_counts
+        for protocol, count in protocol_counts.items():
+            if protocol in self.protocol_labels:
+                self.protocol_labels[protocol].set(str(count))
+        if hasattr(self, 'protocol_pie_chart') and self.protocol_pie_chart:
+            self.protocol_pie_chart.update_plot(protocol_counts)
 
     def update_protocol_counts_for_env(self, protocol_counts, environment=None):
-        """Update protocol counts for a specific environment or global"""
-        # **FIXED: Only update main UI with global stats**
-        if environment is None:
-            # This is global stats - update the main UI
+        """Update protocol counts - only for global stats"""
+        if environment is None:  # Only update for global stats
             self.update_protocol_counts(protocol_counts)
-        else:
-            # This is environment-specific stats - don't update main UI to prevent flashing
-            # Environment tabs would handle this separately if they exist
-            pass
 
     def process_packet(self, packet_data):
         """Process received packet data"""
+        # Better queue management
         try:
-            if not self.packet_queue.full():
+            self.packet_queue.put_nowait(packet_data)
+        except queue.Full:
+            # Remove oldest and add new
+            try:
+                self.packet_queue.get_nowait()
                 self.packet_queue.put_nowait(packet_data)
-            else:
-                # Skip oldest packet if queue is full
-                try:
-                    self.packet_queue.get_nowait()
-                    self.packet_queue.put_nowait(packet_data)
-                except queue.Empty:
-                    pass
+            except queue.Empty:
+                pass
         except Exception as e:
-            self.log_message(f"Error queuing packet: {str(e)}")
+            print(f"Error queuing packet: {str(e)}")
 
     def process_packet_with_environments(self, packet_data, environments=None):
         """Process packet with environment information"""
-        # First call the original process_packet method
         self.process_packet(packet_data)
-
-        # If environments are specified, log them (but don't spam the log)
-        if environments and len(environments) > 0:
-            # Only log occasionally to avoid spam
-            if hasattr(self, '_last_env_log_time'):
-                if time.time() - self._last_env_log_time > 10:  # Log every 10 seconds
-                    env_str = ", ".join(environments)
-                    self.log_message(f"Packets being sent to environments: {env_str}")
-                    self._last_env_log_time = time.time()
-            else:
-                env_str = ", ".join(environments)
-                self.log_message(f"Packets being sent to environments: {env_str}")
-                self._last_env_log_time = time.time()
 
     def start_processing_packets(self):
         """Process packets from the queue and update UI"""
-        if not self.packet_queue.empty():
+        # More responsive packet processing
+        packets_processed = 0
+        max_packets_per_cycle = 20  # Process more packets per cycle
+
+        while not self.packet_queue.empty() and packets_processed < max_packets_per_cycle:
             try:
                 packet_data = self.packet_queue.get_nowait()
-                self.add_packet_to_tree(packet_data)
+                packets_processed += 1
+                # Process packet data if needed
             except queue.Empty:
-                pass
+                break
             except Exception as e:
-                self.log_message(f"Error processing packet: {str(e)}")
+                print(f"Error processing packet: {str(e)}")
+                break
 
-        # Schedule next processing
-        self.root.after(10, self.start_processing_packets)
-
-    def add_packet_to_tree(self, packet_data):
-        """Add packet data to the treeview"""
-        try:
-            # Format source and destination
-            source = f"{packet_data.get('source_ip', 'Unknown')}"
-            if packet_data.get('source_port'):
-                source += f":{packet_data.get('source_port')}"
-
-            destination = f"{packet_data.get('destination_ip', 'Unknown')}"
-            if packet_data.get('destination_port'):
-                destination += f":{packet_data.get('destination_port')}"
-
-            # Add to treeview
-            self.packet_tree.insert("", 0, values=(
-                packet_data.get('timestamp', 'Unknown'),
-                packet_data.get('protocol', 'Unknown'),
-                source,
-                destination,
-                packet_data.get('packet_length', 0)
-            ))
-
-            # Limit number of items in tree to prevent memory issues
-            if self.packet_tree.get_children():
-                items = self.packet_tree.get_children()
-                if len(items) > 1000:
-                    self.packet_tree.delete(items[-1])
-        except Exception as e:
-            self.log_message(f"Error adding packet to tree: {str(e)}")
+        # More responsive scheduling
+        self.root.after(100, self.start_processing_packets)  # 100ms instead of 500ms
 
     def log_message(self, message):
         """Add message to log queue"""
         timestamp = datetime.now().strftime("%H:%M:%S")
         log_entry = f"[{timestamp}] {message}"
 
-        # Add to queue
-        self.log_queue.put(log_entry)
+        # Better log queue management
+        if self.log_queue.qsize() > 400:
+            try:
+                # Remove multiple old entries
+                for _ in range(50):
+                    self.log_queue.get_nowait()
+            except queue.Empty:
+                pass
 
-        # Also print to console for debugging
-        print(log_entry)
+        self.log_queue.put(log_entry)
+        print(log_entry)  # Also print to console
 
     def start_log_consumer(self):
         """Start consuming messages from the log queue"""
 
         def consume():
             try:
-                # Process all available messages
-                processed = False
-                while not self.log_queue.empty():
+                # Process more log messages at once for better responsiveness
+                messages_processed = 0
+                max_messages = 10
+
+                while not self.log_queue.empty() and messages_processed < max_messages:
                     try:
                         message = self.log_queue.get_nowait()
                         self.log_text.config(state=tk.NORMAL)
                         self.log_text.insert(tk.END, message + "\n")
+
+                        # Better log management
+                        lines = self.log_text.get("1.0", tk.END).split('\n')
+                        if len(lines) > 200:  # Keep more lines for better context
+                            self.log_text.delete("1.0", f"{len(lines) - 150}.0")
+
                         self.log_text.see(tk.END)
                         self.log_text.config(state=tk.DISABLED)
-                        processed = True
+                        messages_processed += 1
                     except queue.Empty:
                         break
-
-                # Force UI update if we processed any messages
-                if processed:
-                    self.root.update_idletasks()
-
             except Exception as e:
                 print(f"Error consuming log: {e}")
-                import traceback
-                traceback.print_exc()
 
-            # Schedule next check
-            self.root.after(100, consume)
+            # More responsive log updates
+            self.root.after(500, consume)  # 500ms instead of 1 second
 
-        # Start initial consumption
-        self.root.after(100, consume)
+        # Start consumption
+        self.root.after(500, consume)
 
     def clear_logs(self):
         """Clear the log text area"""
@@ -545,3 +405,15 @@ class PacketCaptureClientUI:
                 self.root.destroy()
         else:
             self.root.destroy()
+
+    def debug_protocol_update(self, source, protocol_counts):
+        """Debug method to track protocol updates"""
+        total = sum(protocol_counts.values())
+        if total > 0:
+            print(f"[DEBUG] Protocol update from {source}: Total={total}")
+            for proto, count in protocol_counts.items():
+                if count > 0:
+                    percentage = (count / total) * 100
+                    print(f"  {proto}: {count} ({percentage:.1f}%)")
+        else:
+            print(f"[DEBUG] Protocol update from {source}: No packets yet")
