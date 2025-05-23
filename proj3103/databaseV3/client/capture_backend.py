@@ -39,13 +39,17 @@ class OptimizedPacketCaptureBackend:
             'Other': 0
         }
 
-        # Optimized UI updates - much more responsive
+        # Optimized UI updates
         self.last_ui_update = 0
-        self.ui_update_interval = 1.0  # Update UI every 1 second (was 5)
+        self.ui_update_interval = 0.2  # 200ms for more responsive updates
         self.local_protocol_counts = {
             'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
         }
         self.local_packet_count = 0
+
+        # Track changes for incremental updates
+        self.protocol_changes = {}
+        self.last_protocol_snapshot = {}
 
     def log(self, message):
         """Log a message through the UI"""
@@ -135,40 +139,65 @@ class OptimizedPacketCaptureBackend:
             self.client = None
 
     def update_protocol_counts(self, protocol_counts, environment=None):
-        """Update protocol counts received from server"""
+        """Update protocol counts with incremental UI updates"""
         current_time = time.time()
-        if current_time - self.last_ui_update < 0.5:
+
+        # Quick check if update needed
+        if current_time - self.last_ui_update < 0.1:  # 100ms minimum between updates
             return
-        if environment is None:
-            self.protocol_counts = protocol_counts
-            self.last_ui_update = current_time
-            if self.ui:
-                try:
-                    if hasattr(self.ui, 'update_protocol_counts_for_env'):
-                        self.ui.update_protocol_counts_for_env(protocol_counts, None)
-                    elif hasattr(self.ui, 'update_protocol_counts'):
-                        self.ui.update_protocol_counts(protocol_counts)
-                    if hasattr(self.ui, 'protocol_pie_chart') and self.ui.protocol_pie_chart:
-                        self.ui.protocol_pie_chart.update_plot(protocol_counts)
-                except Exception as e:
-                    print(f"Error updating UI protocol counts: {e}")
+
+        # Calculate what changed
+        changes = {}
+        for protocol, count in protocol_counts.items():
+            last_count = self.last_protocol_snapshot.get(protocol, 0)
+            if count != last_count:
+                changes[protocol] = count
+
+        # Only update if there are changes
+        if changes:
+            if environment is None:
+                self.protocol_counts = protocol_counts
+                self.last_ui_update = current_time
+                self.last_protocol_snapshot = protocol_counts.copy()
+
+                if self.ui and hasattr(self.ui, 'update_protocol_counts_incremental'):
+                    # Use incremental update if available
+                    self.ui.update_protocol_counts_incremental(changes)
+                elif self.ui:
+                    # Fallback to full update
+                    try:
+                        if hasattr(self.ui, 'update_protocol_counts_for_env'):
+                            self.ui.update_protocol_counts_for_env(protocol_counts, None)
+                        elif hasattr(self.ui, 'update_protocol_counts'):
+                            self.ui.update_protocol_counts(protocol_counts)
+                        if hasattr(self.ui, 'protocol_pie_chart') and self.ui.protocol_pie_chart:
+                            self.ui.protocol_pie_chart.update_plot_incremental(changes)
+                    except Exception as e:
+                        print(f"Error updating UI protocol counts: {e}")
 
     def process_packet(self, packet_dict):
-        """Process a packet from the handler and send it to the server"""
+        """Process a packet with immediate local UI feedback"""
         if not self.running:
             return
+
         try:
+            # Extract protocol for immediate UI update
             protocol = packet_dict.get('highest_layer', packet_dict.get('protocol', 'Other'))
+
+            # Update local counts immediately
             if protocol in self.local_protocol_counts:
                 self.local_protocol_counts[protocol] += 1
             else:
                 self.local_protocol_counts['Other'] += 1
             self.local_packet_count += 1
+
+            # Immediate UI feedback (very fast)
             current_time = time.time()
-            if current_time - self.last_ui_update > 2.0:
+            if current_time - self.last_ui_update > 0.2:  # 200ms updates
                 self.last_ui_update = current_time
                 if self.ui:
                     try:
+                        # Update UI with local counts for immediate feedback
                         if hasattr(self.ui, 'update_protocol_counts_for_env'):
                             self.ui.update_protocol_counts_for_env(self.local_protocol_counts, None)
                         elif hasattr(self.ui, 'update_protocol_counts'):
@@ -176,17 +205,24 @@ class OptimizedPacketCaptureBackend:
                         self.ui.update_packet_count(self.local_packet_count)
                     except Exception as e:
                         print(f"Error updating UI with local counts: {e}")
+
+            # Continue with normal packet processing
             all_envs = [env.get('env_name') for env in self.environments]
             if not all_envs:
                 return
+
             if self.username:
                 packet_dict['username'] = self.username
+
             if self.client:
+                # Include protocol in packet for server
+                packet_dict['protocol_hint'] = protocol
                 success = self.client.send_packet(packet_dict)
                 if not success:
                     if not hasattr(self, '_last_error_log') or time.time() - self._last_error_log > 5:
                         self.log("Warning: Failed to send packet to server")
                         self._last_error_log = time.time()
+
         except Exception as e:
             print(f"Error processing packet: {str(e)}")
 

@@ -8,6 +8,16 @@ import traceback
 import uuid
 from datetime import datetime
 
+import threading
+import time
+import queue
+import socket
+import json
+import select
+import traceback
+import uuid
+from datetime import datetime
+
 
 class StableSocketClient:
     def __init__(self, host, port, logger=None, debug_mode=True):
@@ -18,7 +28,7 @@ class StableSocketClient:
         self.running = False
         self.logger = logger
         self.debug_mode = debug_mode
-        self.reconnect_delay = 2.0  # CHANGED: from 5.0
+        self.reconnect_delay = 2.0
         self.send_thread = None
         self.recv_thread = None
         self.last_ack_time = 0
@@ -28,21 +38,32 @@ class StableSocketClient:
         self.environments = []
         self.username = None
         self.lock = threading.Lock()
-        self.send_queue = queue.Queue(maxsize=500)  # CHANGED: from 50
+        self.send_queue = queue.Queue(maxsize=500)
         self.pending_packets = set()
         self.pending_packets_lock = threading.Lock()
         self.acked_packet_ids = set()
+
+        # Protocol counts with delta tracking
         self.protocol_counts = {
+            'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
+        }
+        self.protocol_deltas = {
             'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
         }
         self.environment_protocol_counts = {}
         self.protocol_update_callback = None
+
+        # Optimized update intervals
+        self.last_ui_update = 0
+        self.ui_update_interval = 0.2  # Faster updates: 200ms instead of 2s
+        self.delta_send_interval = 1.0  # Send deltas every second
+        self.last_delta_send = 0
+
         self.auth_attempts = 0
         self.max_auth_attempts = 3
         self.verbose_logging = False
-        self.connection_timeout = 30.0  # CHANGED: from 15.0
-        self.last_ui_update = 0
-        self.ui_update_interval = 2.0  # CHANGED: from 10.0
+        self.connection_timeout = 30.0
+
         self.log(f"Initialized StableSocketClient for {host}:{port}")
 
     def log(self, message):
@@ -243,6 +264,48 @@ class StableSocketClient:
 
         self.log("Client stopped")
 
+    def increment_protocol_count(self, protocol):
+        """Increment protocol count and track delta"""
+        with self.lock:
+            if protocol in self.protocol_counts:
+                self.protocol_counts[protocol] += 1
+                self.protocol_deltas[protocol] += 1
+            else:
+                self.protocol_counts['Other'] += 1
+                self.protocol_deltas['Other'] += 1
+
+    def send_protocol_deltas(self):
+        """Send accumulated protocol deltas to server"""
+        current_time = time.time()
+        if current_time - self.last_delta_send < self.delta_send_interval:
+            return
+
+        with self.lock:
+            # Check if there are any deltas to send
+            has_deltas = any(count > 0 for count in self.protocol_deltas.values())
+            if not has_deltas:
+                return
+
+            # Create delta message
+            delta_message = {
+                'type': 'protocol_delta',
+                'username': self.username,
+                'deltas': self.protocol_deltas.copy(),
+                'timestamp': datetime.now().isoformat()
+            }
+
+            # Reset deltas
+            for protocol in self.protocol_deltas:
+                self.protocol_deltas[protocol] = 0
+
+            self.last_delta_send = current_time
+
+        # Send delta message
+        try:
+            self.send_queue.put_nowait(json.dumps(delta_message) + '\n')
+        except queue.Full:
+            pass
+
     def send_packet(self, packet_dict, target_environments=None):
         """Send a packet to all environments the user is connected to."""
         if not self.running:
@@ -352,21 +415,17 @@ class StableSocketClient:
 
         while self.running:
             try:
-                # Check connection status
                 if not self.connected or self.socket is None:
-                    time.sleep(1.0)  # **LAG FIX: Longer sleep**
+                    time.sleep(1.0)
                     continue
 
-                # Make a local copy of socket
                 with self.lock:
                     if not self.connected or self.socket is None:
                         continue
                     current_socket = self.socket
 
-                # Check for data with longer timeout
                 try:
-                    readable, _, exceptional = select.select([current_socket], [], [current_socket],
-                                                             1.0)  # **LAG FIX: Longer timeout**
+                    readable, _, exceptional = select.select([current_socket], [], [current_socket], 0.5)
                 except:
                     with self.lock:
                         self.connected = False
@@ -378,7 +437,6 @@ class StableSocketClient:
                             self.socket = None
                     continue
 
-                # Check for exceptional conditions
                 if current_socket in exceptional:
                     with self.lock:
                         self.connected = False
@@ -390,7 +448,6 @@ class StableSocketClient:
                             self.socket = None
                     continue
 
-                # Process readable socket
                 if current_socket in readable:
                     try:
                         data = current_socket.recv(4096)
@@ -407,17 +464,14 @@ class StableSocketClient:
                                     self.socket = None
                             continue
 
-                        # Process the data
                         text_data = data.decode('utf-8')
                         buffer += text_data
 
-                        # **LAG FIX: Limit buffer size**
                         if len(buffer) > 10000:
-                            buffer = buffer[-5000:]  # Keep only last 5000 characters
+                            buffer = buffer[-5000:]
 
-                        # Process complete messages
                         messages_processed = 0
-                        max_messages_per_cycle = 10  # **LAG FIX: Limit messages processed**
+                        max_messages_per_cycle = 50  # Process more messages
 
                         while '\n' in buffer and messages_processed < max_messages_per_cycle:
                             line, buffer = buffer.split('\n', 1)
@@ -432,34 +486,45 @@ class StableSocketClient:
                                     self.last_ack_time = time.time()
                                     packet_id = response.get('packet_id')
 
+                                    # Extract protocol from ACK if available
+                                    protocol = response.get('protocol')
+
                                     if packet_id and packet_id not in self.acked_packet_ids:
                                         with self.lock:
                                             self.packet_count += 1
                                             self.local_packet_count += 1
                                             self.acked_packet_ids.add(packet_id)
 
-                                            # **LAG FIX: Limit set size more aggressively**
+                                            # Update protocol count from ACK
+                                            if protocol:
+                                                self.increment_protocol_count(protocol)
+
                                             if len(self.acked_packet_ids) > 1000:
                                                 self.acked_packet_ids = set(list(self.acked_packet_ids)[-500:])
 
-                                            # **LAG FIX: Log less frequently**
                                             if self.packet_count - last_packet_count_log >= 50:
                                                 self.log(f"Packet count: {self.packet_count}")
                                                 last_packet_count_log = self.packet_count
 
                                 elif msg_type == 'stats':
-                                    # **LAG FIX: Heavy throttling for UI updates**
+                                    # Handle incremental stats updates
                                     current_time = time.time()
 
-                                    if current_time - self.last_ui_update < self.ui_update_interval:
-                                        continue
+                                    if 'incremental' in response and response['incremental']:
+                                        # Apply incremental update
+                                        if 'protocol_deltas' in response:
+                                            with self.lock:
+                                                for protocol, delta in response['protocol_deltas'].items():
+                                                    if protocol in self.protocol_counts:
+                                                        self.protocol_counts[protocol] += delta
+                                    else:
+                                        # Full update (fallback)
+                                        if 'environment' not in response and 'protocol_counts' in response:
+                                            self.protocol_counts = response['protocol_counts']
 
-                                    # Only process global stats
-                                    if 'environment' not in response and 'protocol_counts' in response:
+                                    # Update UI more frequently
+                                    if current_time - self.last_ui_update >= self.ui_update_interval:
                                         self.last_ui_update = current_time
-                                        self.protocol_counts = response['protocol_counts']
-
-                                        # Call UI update callback if registered
                                         if self.protocol_update_callback:
                                             try:
                                                 self.protocol_update_callback(self.protocol_counts, None)
@@ -476,8 +541,10 @@ class StableSocketClient:
                                 messages_processed += 1
 
                             except json.JSONDecodeError:
-                                # Skip invalid JSON
                                 pass
+
+                        # Send any accumulated protocol deltas
+                        self.send_protocol_deltas()
 
                     except Exception as e:
                         if self.verbose_logging:

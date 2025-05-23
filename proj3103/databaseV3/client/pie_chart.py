@@ -32,9 +32,12 @@ class ProtocolPieChart(Frame):
         # Colors for the pie chart
         self.colors = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d', '#ffc658']
 
-        # Responsive throttling for pie chart updates
+        # Responsive throttling
         self.last_update = 0
-        self.update_interval = 2.0  # Update every 2 seconds (was 3)
+        self.update_interval = 0.5  # Update every 500ms instead of 2s
+
+        # Track last values for incremental updates
+        self.last_counts = {}
 
         if MATPLOTLIB_AVAILABLE:
             self.setup_matplotlib_chart()
@@ -176,6 +179,24 @@ class ProtocolPieChart(Frame):
 
         except Exception as e:
             print(f"Error updating text display: {e}")
+
+    def update_plot_incremental(self, changes):
+        """Update only the changed values for better performance"""
+        current_time = time.time()
+        if current_time - self.last_update < 0.3:  # 300ms minimum
+            return
+
+        # Apply changes
+        for protocol, count in changes.items():
+            self.protocol_counts[protocol] = count
+
+        self.last_update = current_time
+
+        # Update visualization
+        if MATPLOTLIB_AVAILABLE and hasattr(self, 'ax'):
+            self.update_matplotlib_chart()
+        else:
+            self.update_text_display()
 
 
 def integrate_pie_chart_to_ui(ui_class):
