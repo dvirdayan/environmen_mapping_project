@@ -5,7 +5,7 @@
     {
       "env_name": "C1",
       "env_password": "CCC",
-      "is_admin": true
+      "is_admin": false
     },
     {
       "env_name": "test",
