@@ -10,7 +10,7 @@ from datetime import datetime
 
 
 class StableSocketClient:
-    def __init__(self, host, port, logger=None, debug_mode=True):
+    def __init__(self, host, port, logger=None, debug_mode=True, is_admin_dashboard=False):
         self.host = host
         self.port = port
         self.socket = None
@@ -47,8 +47,9 @@ class StableSocketClient:
         # Admin support
         self.is_admin = False
         self.admin_stats_callback = None
+        self.is_admin_dashboard = is_admin_dashboard  # NEW: Flag to identify admin dashboard connections
 
-        self.log(f"Initialized StableSocketClient for {host}:{port}")
+        self.log(f"Initialized StableSocketClient for {host}:{port} (Admin Dashboard: {is_admin_dashboard})")
 
     def log(self, message):
         """Log a message with optional debug prefix"""
@@ -121,7 +122,8 @@ class StableSocketClient:
             'environments': self.environments,
             'username': username,
             'account_info': account_info,
-            'is_admin': self.is_admin  # Add admin flag
+            'is_admin': self.is_admin,  # Add admin flag
+            'is_admin_dashboard': self.is_admin_dashboard  # NEW: Add admin dashboard flag
         }
 
     def set_protocol_update_callback(self, callback):
@@ -138,11 +140,13 @@ class StableSocketClient:
         if self.is_admin and self.connected:
             request_msg = {
                 'type': 'admin_stats_request',
-                'username': self.username
+                'username': self.username,
+                'is_admin_dashboard': self.is_admin_dashboard  # NEW: Include dashboard flag
             }
             try:
                 self.send_queue.put_nowait(json.dumps(request_msg) + '\n')
-                self.log("Requested admin stats from server")
+                if not self.is_admin_dashboard:  # Only log for regular clients, not dashboard
+                    self.log("Requested admin stats from server")
             except queue.Full:
                 self.log("Failed to request admin stats - queue full")
 
@@ -161,12 +165,16 @@ class StableSocketClient:
                 self.socket = None
 
             self.auth_attempts += 1
-            self.log(f"Connecting to {self.host}:{self.port} (attempt {self.auth_attempts})")
+            if not self.is_admin_dashboard:  # Only log connection attempts for regular clients
+                self.log(f"Connecting to {self.host}:{self.port} (attempt {self.auth_attempts})")
+
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.socket.settimeout(self.connection_timeout)
 
             self.socket.connect((self.host, self.port))
-            self.log(f"Connected to {self.host}:{self.port}")
+
+            if not self.is_admin_dashboard:  # Only log for regular clients
+                self.log(f"Connected to {self.host}:{self.port}")
 
             # Handle authentication
             if not self.auth_data:
@@ -174,13 +182,16 @@ class StableSocketClient:
                     'type': 'auth',
                     'environments': self.environments,
                     'username': self.username,
-                    'is_admin': self.is_admin
+                    'is_admin': self.is_admin,
+                    'is_admin_dashboard': self.is_admin_dashboard  # NEW: Include dashboard flag
                 }
 
             # Send auth data
             auth_message = json.dumps(self.auth_data) + '\n'
             self.socket.sendall(auth_message.encode('utf-8'))
-            self.log("Auth data sent, waiting for response...")
+
+            if not self.is_admin_dashboard:  # Only log for regular clients
+                self.log("Auth data sent, waiting for response...")
 
             # Wait for response
             response_data = b""
@@ -196,17 +207,20 @@ class StableSocketClient:
                         if b'\n' in response_data:
                             break
                     else:
-                        self.log("Server closed connection during auth")
+                        if not self.is_admin_dashboard:
+                            self.log("Server closed connection during auth")
                         return False
 
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    self.log(f"Auth error: {str(e)}")
+                    if not self.is_admin_dashboard:
+                        self.log(f"Auth error: {str(e)}")
                     return False
 
             if not response_data:
-                self.log("No authentication response received")
+                if not self.is_admin_dashboard:
+                    self.log("No authentication response received")
                 return False
 
             # Check authentication
@@ -228,17 +242,21 @@ class StableSocketClient:
                             continue
 
             if not authenticated:
-                self.log("Authentication failed")
+                if not self.is_admin_dashboard:
+                    self.log("Authentication failed")
                 return False
 
             # Set to non-blocking
             self.socket.setblocking(False)
             self.connected = True
-            self.log("Successfully connected and authenticated")
+
+            if not self.is_admin_dashboard:  # Only log for regular clients
+                self.log("Successfully connected and authenticated")
 
             # If admin, request initial stats
             if self.is_admin:
-                self.log("Admin user connected - requesting initial stats")
+                if not self.is_admin_dashboard:
+                    self.log("Admin user connected - requesting initial stats")
                 # Delay the initial request slightly
                 threading.Timer(1.0, self.request_admin_stats).start()
 
@@ -252,7 +270,8 @@ class StableSocketClient:
             return True
 
         except Exception as e:
-            self.log(f"Connection error: {str(e)}")
+            if not self.is_admin_dashboard:  # Only log errors for regular clients
+                self.log(f"Connection error: {str(e)}")
             if self.socket:
                 try:
                     self.socket.close()
@@ -267,7 +286,8 @@ class StableSocketClient:
         if not self.running:
             return
         self.running = False
-        self.log("Stopping client...")
+        if not self.is_admin_dashboard:  # Only log for regular clients
+            self.log("Stopping client...")
 
         with self.lock:
             if self.socket:
@@ -278,7 +298,8 @@ class StableSocketClient:
                 self.socket = None
             self.connected = False
 
-        self.log("Client stopped")
+        if not self.is_admin_dashboard:  # Only log for regular clients
+            self.log("Client stopped")
 
     def send_packet(self, packet_dict, target_environments=None):
         """Send a packet to all environments the user is connected to."""
@@ -315,7 +336,8 @@ class StableSocketClient:
             else:
                 return False
         except Exception as e:
-            self.log(f"Error queueing packet: {str(e)}")
+            if not self.is_admin_dashboard:  # Only log errors for regular clients
+                self.log(f"Error queueing packet: {str(e)}")
             return False
 
     def _send_loop(self):
@@ -331,7 +353,8 @@ class StableSocketClient:
                         if self.auth_attempts < self.max_auth_attempts:
                             if self.connect():
                                 consecutive_failures = 0
-                                self.log("Reconnected successfully")
+                                if not self.is_admin_dashboard:  # Only log for regular clients
+                                    self.log("Reconnected successfully")
                         else:
                             time.sleep(self.reconnect_delay * 2)
                             self.auth_attempts = 0
@@ -359,7 +382,8 @@ class StableSocketClient:
                             consecutive_failures = 0
                     except socket.error as e:
                         consecutive_failures += 1
-                        self.log(f"Send error (#{consecutive_failures}): {str(e)}")
+                        if not self.is_admin_dashboard:  # Only log errors for regular clients
+                            self.log(f"Send error (#{consecutive_failures}): {str(e)}")
                         try:
                             self.send_queue.put(data)
                         except:
@@ -375,11 +399,13 @@ class StableSocketClient:
                         break
                     except Exception as e:
                         consecutive_failures += 1
-                        self.log(f"Unexpected send error: {str(e)}")
+                        if not self.is_admin_dashboard:  # Only log errors for regular clients
+                            self.log(f"Unexpected send error: {str(e)}")
                         break
                 time.sleep(0.1)
             except Exception as e:
-                self.log(f"Unexpected error in send loop: {str(e)}")
+                if not self.is_admin_dashboard:  # Only log errors for regular clients
+                    self.log(f"Unexpected error in send loop: {str(e)}")
                 time.sleep(1.0)
 
     def _recv_loop(self):
@@ -434,7 +460,8 @@ class StableSocketClient:
                         data = current_socket.recv(4096)
 
                         if not data:
-                            self.log("Connection closed by server")
+                            if not self.is_admin_dashboard:  # Only log for regular clients
+                                self.log("Connection closed by server")
                             with self.lock:
                                 self.connected = False
                                 if self.socket:
@@ -480,8 +507,8 @@ class StableSocketClient:
                                             if len(self.acked_packet_ids) > 1000:
                                                 self.acked_packet_ids = set(list(self.acked_packet_ids)[-500:])
 
-                                            # **LAG FIX: Log less frequently**
-                                            if self.packet_count - last_packet_count_log >= 50:
+                                            # **LAG FIX: Log less frequently and only for regular clients**
+                                            if not self.is_admin_dashboard and self.packet_count - last_packet_count_log >= 50:
                                                 self.log(f"Packet count: {self.packet_count}")
                                                 last_packet_count_log = self.packet_count
 
@@ -502,7 +529,7 @@ class StableSocketClient:
                                             try:
                                                 self.protocol_update_callback(self.protocol_counts, None)
                                             except Exception as e:
-                                                if self.verbose_logging:
+                                                if self.verbose_logging and not self.is_admin_dashboard:
                                                     self.log(f"Error in UI callback: {e}")
 
                                 elif msg_type == 'admin_stats':
@@ -511,17 +538,20 @@ class StableSocketClient:
                                         try:
                                             admin_data = response.get('data', {})
                                             self.admin_stats_callback(admin_data)
-                                            if self.verbose_logging:
+                                            if self.verbose_logging and not self.is_admin_dashboard:
                                                 client_count = len(admin_data.get('clients', {}))
                                                 self.log(f"Received admin stats: {client_count} clients")
                                         except Exception as e:
-                                            self.log(f"Error in admin stats callback: {e}")
+                                            if not self.is_admin_dashboard:
+                                                self.log(f"Error in admin stats callback: {e}")
 
                                 elif msg_type == 'authenticated':
-                                    self.log("Authentication confirmed")
+                                    if not self.is_admin_dashboard:  # Only log for regular clients
+                                        self.log("Authentication confirmed")
 
                                 elif msg_type == 'error':
-                                    self.log(f"Server error: {response.get('message', 'Unknown')}")
+                                    if not self.is_admin_dashboard:  # Only log for regular clients
+                                        self.log(f"Server error: {response.get('message', 'Unknown')}")
 
                                 messages_processed += 1
 
@@ -530,19 +560,20 @@ class StableSocketClient:
                                 pass
 
                         # Periodic admin stats request
-                        if self.is_admin and self.connected:
+                        if self.is_admin and self.connected and self.is_admin_dashboard:
                             current_time = time.time()
                             if current_time - last_admin_stats_request > 2.0:  # Request every 2 seconds
                                 self.request_admin_stats()
                                 last_admin_stats_request = current_time
 
                     except Exception as e:
-                        if self.verbose_logging:
+                        if self.verbose_logging and not self.is_admin_dashboard:
                             self.log(f"Error processing received data: {str(e)}")
                         time.sleep(0.5)
 
             except Exception as e:
-                self.log(f"Unexpected error in receive loop: {str(e)}")
+                if not self.is_admin_dashboard:  # Only log errors for regular clients
+                    self.log(f"Unexpected error in receive loop: {str(e)}")
                 time.sleep(2.0)
 
     def get_packet_count(self):

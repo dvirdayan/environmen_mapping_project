@@ -100,6 +100,56 @@ class AdminEnabledClientUI(PacketCaptureClientUI):
             print("[UI] Admin stats received but no dashboard to display them")
 
 
+class AdminDashboardBackend(OptimizedPacketCaptureBackend):
+    """Backend specifically for admin dashboard - doesn't show up in client list"""
+
+    def __init__(self, ui=None):
+        super().__init__(ui)
+        self.is_admin_dashboard_connection = True  # Flag this as admin dashboard
+
+    def start(self):
+        """Start admin dashboard backend - modified to use admin dashboard client"""
+        if self.running:
+            return
+
+        self.running = True
+
+        # Import socket client here to avoid circular imports
+        from socket_client import StableSocketClient
+
+        # Create client with admin dashboard flag
+        self.client = StableSocketClient(
+            self.server_host,
+            self.server_port,
+            self.log,
+            is_admin_dashboard=True  # NEW: Mark as admin dashboard connection
+        )
+
+        # Set admin callback if admin
+        if self.is_admin and self.ui and hasattr(self.ui, 'update_admin_stats'):
+            self.client.set_admin_stats_callback(self.ui.update_admin_stats)
+            self.log("Admin stats callback configured")
+
+        # Set authentication
+        env_names = [env.get('env_name') for env in self.environments]
+        self.log(f"Setting auth for environments: {env_names} as user: {self.username} (Admin Dashboard)")
+        self.client.set_auth(self.environments, self.username, self.account_info)
+
+        # Register protocol update callback
+        self.client.set_protocol_update_callback(self.update_protocol_counts)
+
+        # Note: We don't create packet handler for admin dashboard - it's monitoring only
+
+        # Start the client
+        self.client.start()
+
+        # Start stats updates
+        import threading
+        stats_thread = threading.Thread(target=self.update_stats)
+        stats_thread.daemon = True
+        stats_thread.start()
+
+
 def main():
     parser = argparse.ArgumentParser(description='Admin-Enabled Packet Capture Client')
     parser.add_argument('--config', type=str, help='Path to user config file')
@@ -107,6 +157,8 @@ def main():
                         help='Force show admin dashboard regardless of user status')
     parser.add_argument('--server', type=str, default="localhost", help='Server hostname or IP')
     parser.add_argument('--port', type=int, default=9007, help='Server port')
+    parser.add_argument('--dashboard-only', action='store_true',
+                        help='Run as admin dashboard only (will not appear in client list)')
     args = parser.parse_args()
 
     # Default settings
@@ -115,7 +167,7 @@ def main():
     account_info = None
     is_admin = args.force_admin  # Start with force_admin flag
 
-    print(f"Starting client with force_admin={args.force_admin}")
+    print(f"Starting client with force_admin={args.force_admin}, dashboard_only={args.dashboard_only}")
 
     # Load config if provided
     if args.config and os.path.exists(args.config):
@@ -155,6 +207,8 @@ def main():
     window_title = f"Packet Capture - {username}"
     if is_admin or args.force_admin:
         window_title += " [ADMIN]"
+    if args.dashboard_only:
+        window_title += " - Dashboard Only"
     root.title(window_title)
     root.geometry("900x700")
 
@@ -162,9 +216,13 @@ def main():
     print("Creating UI...")
     ui = AdminEnabledClientUI(root, force_admin=args.force_admin)
 
-    # Create backend
+    # Create backend - use admin dashboard backend if dashboard_only
     print("Creating backend...")
-    backend = OptimizedPacketCaptureBackend(ui=ui)
+    if args.dashboard_only:
+        backend = AdminDashboardBackend(ui=ui)
+        print("Using AdminDashboardBackend - will not appear in client list")
+    else:
+        backend = OptimizedPacketCaptureBackend(ui=ui)
 
     # Configure backend
     backend.configure(
@@ -184,6 +242,8 @@ def main():
         ui.log_message("*** ADMIN MODE ACTIVE ***")
         if args.force_admin:
             ui.log_message("(Admin dashboard forced via command line)")
+    if args.dashboard_only:
+        ui.log_message("*** DASHBOARD ONLY MODE - Will not appear in client list ***")
     ui.log_message(f"Server: {args.server}:{args.port}")
 
     # Start the main loop

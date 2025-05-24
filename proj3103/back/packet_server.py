@@ -22,6 +22,10 @@ class PacketServer:
         # Dictionary to track active connections: {client_addr: username}
         self.active_connections = {}
 
+        # NEW: Track admin dashboard connections separately
+        self.admin_dashboard_connections = {}  # {client_addr: username}
+        self.admin_dashboard_clients = set()  # usernames of admin dashboard connections
+
         # Add environment tracking
         self.environments = {}  # Dictionary to store env data: {env_name: {clients, packets}}
         self.environment_lock = threading.Lock()
@@ -84,19 +88,34 @@ class PacketServer:
                         print(f"[SERVER] New packet ID cache size: {len(self.processed_packet_ids)}")
                 self.last_packet_id_cleanup = current_time
 
-            # Get a list of connected clients
+            # Get a list of connected clients (excluding admin dashboards)
             connected_clients = {}
             with self.clients_lock:
                 for addr, username in self.active_connections.items():
+                    # NEW: Skip admin dashboard connections
+                    if addr in self.admin_dashboard_connections:
+                        continue
+
                     if username in self.clients_by_username and self.clients_by_username[username].get('connected',
                                                                                                        False):
                         connected_clients[addr] = self.clients_by_username[username]
 
-            if not connected_clients:
+            # NEW: Also send stats to admin dashboard connections
+            admin_dashboard_clients = {}
+            with self.clients_lock:
+                for addr, username in self.admin_dashboard_connections.items():
+                    if username in self.clients_by_username and self.clients_by_username[username].get('connected',
+                                                                                                       False):
+                        admin_dashboard_clients[addr] = self.clients_by_username[username]
+
+            # Combine all clients that should receive stats
+            all_clients_for_stats = {**connected_clients, **admin_dashboard_clients}
+
+            if not all_clients_for_stats:
                 continue
 
-            # Send global stats to each connected client
-            for addr, client_info in connected_clients.items():
+            # Send global stats to each connected client (including admin dashboards)
+            for addr, client_info in all_clients_for_stats.items():
                 try:
                     # Get global protocol counts
                     with self.protocol_lock:
@@ -152,13 +171,21 @@ class PacketServer:
             if int(time.time()) % 2 == 0:  # Every 2 seconds
                 for username in list(self.admin_clients):
                     try:
-                        # Find client address
+                        # Find client address (check both regular and dashboard connections)
                         client_addr = None
                         with self.clients_lock:
+                            # Check regular connections first
                             for addr, uname in self.active_connections.items():
                                 if uname == username:
                                     client_addr = addr
                                     break
+
+                            # If not found, check admin dashboard connections
+                            if not client_addr:
+                                for addr, uname in self.admin_dashboard_connections.items():
+                                    if uname == username:
+                                        client_addr = addr
+                                        break
 
                         if client_addr:
                             request_data = {'type': 'admin_stats_request'}
@@ -171,19 +198,31 @@ class PacketServer:
         self.ui_update_callback = callback
 
     def get_clients_data(self):
-        """Get a copy of the current clients data"""
+        """Get a copy of the current clients data (excluding admin dashboards)"""
         with self.clients_lock:
             # Create a dictionary that maps active connections to client info
+            # NEW: Exclude admin dashboard connections
             result = {}
             for addr, username in self.active_connections.items():
+                # Skip admin dashboard connections
+                if addr in self.admin_dashboard_connections:
+                    continue
+
                 if username in self.clients_by_username:
                     result[addr] = self.clients_by_username[username].copy()
             return result
 
     def get_all_clients_data(self):
-        """Get all clients data including disconnected clients"""
+        """Get all clients data including disconnected clients (excluding admin dashboards)"""
         with self.clients_lock:
-            return self.clients_by_username.copy()
+            # NEW: Filter out admin dashboard clients from the result
+            result = {}
+            for username, client_info in self.clients_by_username.items():
+                # Skip if this is an admin dashboard client
+                if username in self.admin_dashboard_clients:
+                    continue
+                result[username] = client_info.copy()
+            return result
 
     def get_protocol_data(self):
         """Get a copy of the current protocol data"""
@@ -218,7 +257,10 @@ class PacketServer:
         """Handle admin statistics requests"""
         username = None
         with self.clients_lock:
+            # Check both regular and admin dashboard connections
             username = self.active_connections.get(client_addr)
+            if not username:
+                username = self.admin_dashboard_connections.get(client_addr)
 
         if not username or username not in self.admin_clients:
             return  # Not an admin
@@ -233,9 +275,13 @@ class PacketServer:
             }
         }
 
-        # Gather client data
+        # NEW: Gather client data (excluding admin dashboard connections)
         with self.clients_lock:
             for addr, uname in self.active_connections.items():
+                # Skip admin dashboard connections
+                if addr in self.admin_dashboard_connections:
+                    continue
+
                 if uname in self.clients_by_username:
                     client_info = self.clients_by_username[uname].copy()
                     # Add connection info
@@ -268,7 +314,9 @@ class PacketServer:
 
             if socket_conn:
                 socket_conn.sendall((json.dumps(admin_data) + '\n').encode('utf-8'))
-                print(f"[SERVER] Sent admin stats to {username}")
+                # Only log for non-dashboard connections to reduce spam
+                if client_addr not in self.admin_dashboard_connections:
+                    print(f"[SERVER] Sent admin stats to {username}")
         except Exception as e:
             print(f"[SERVER] Error sending admin stats: {e}")
 
@@ -295,6 +343,11 @@ class PacketServer:
             # Skip system/heartbeat messages
             if packet.get('type') in ['heartbeat', 'stats', 'ack']:
                 return False
+
+            # NEW: Skip packet processing for admin dashboard connections
+            with self.clients_lock:
+                if client_addr in self.admin_dashboard_connections:
+                    return False  # Admin dashboards don't send packets
 
             # Check for a unique packet ID
             packet_id = packet.get('packet_id')
@@ -487,6 +540,7 @@ class PacketServer:
         username = None
         verified_environments = []  # List of environments this client has access to
         is_admin = False
+        is_admin_dashboard = False  # NEW: Track if this is an admin dashboard connection
 
         try:
             # Make socket non-blocking for timeout handling
@@ -517,13 +571,22 @@ class PacketServer:
                                 if not username:
                                     username = f"user_{addr[0]}_{addr[1]}"  # Fallback username
 
-                                print(f"[SERVER] Client {addr} attempting authentication as user: {username}")
+                                # NEW: Check if this is an admin dashboard connection
+                                is_admin_dashboard = auth_json.get('is_admin_dashboard', False)
+
+                                if is_admin_dashboard:
+                                    print(f"[SERVER] Admin dashboard connection from {addr} as user: {username}")
+                                else:
+                                    print(f"[SERVER] Client {addr} attempting authentication as user: {username}")
 
                                 # Check if admin user
                                 if auth_json.get('is_admin'):
                                     is_admin = True
                                     self.admin_clients.add(username)
-                                    print(f"[SERVER] Admin user {username} connected")
+                                    if is_admin_dashboard:
+                                        print(f"[SERVER] Admin dashboard user {username} connected")
+                                    else:
+                                        print(f"[SERVER] Admin user {username} connected")
 
                                 # Track connection time
                                 self.client_connect_times[username] = time.time()
@@ -560,13 +623,14 @@ class PacketServer:
                                         # Add/initialize environment without verification
                                         self.add_environment(env_name, env_password)
 
-                                        # Add client to environment
-                                        with self.environment_lock:
-                                            self.environments[env_name]['clients'][username] = {
-                                                'username': username,
-                                                'connected': True,
-                                                'account_info': account_info
-                                            }
+                                        # Add client to environment (only for non-admin dashboard connections)
+                                        if not is_admin_dashboard:
+                                            with self.environment_lock:
+                                                self.environments[env_name]['clients'][username] = {
+                                                    'username': username,
+                                                    'connected': True,
+                                                    'account_info': account_info
+                                                }
 
                                 # Register or update the client with multiple environments
                                 with self.clients_lock:
@@ -578,8 +642,12 @@ class PacketServer:
                                         self.clients_by_username[username]['account_info'] = account_info
                                         self.clients_by_username[username]['socket'] = conn
                                         self.clients_by_username[username]['last_addr'] = addr
-                                        print(
-                                            f"[SERVER] User {username} reconnected with environments: {verified_environments}")
+
+                                        if is_admin_dashboard:
+                                            print(f"[SERVER] Admin dashboard {username} reconnected")
+                                        else:
+                                            print(
+                                                f"[SERVER] User {username} reconnected with environments: {verified_environments}")
                                     else:
                                         # Create new user entry
                                         self.clients_by_username[username] = {
@@ -595,16 +663,26 @@ class PacketServer:
                                             'socket': conn,
                                             'last_addr': addr
                                         }
-                                        print(
-                                            f"[SERVER] New user {username} registered with environments: {verified_environments}")
 
-                                    # Map this connection to the username
-                                    self.active_connections[addr] = username
+                                        if is_admin_dashboard:
+                                            print(f"[SERVER] New admin dashboard {username} registered")
+                                        else:
+                                            print(
+                                                f"[SERVER] New user {username} registered with environments: {verified_environments}")
+
+                                    # NEW: Map connection based on type
+                                    if is_admin_dashboard:
+                                        # Track as admin dashboard connection
+                                        self.admin_dashboard_connections[addr] = username
+                                        self.admin_dashboard_clients.add(username)
+                                    else:
+                                        # Map as regular client connection
+                                        self.active_connections[addr] = username
 
                                 # Send auth success response with verified environments
                                 response = {
                                     'status': 'authenticated',
-                                    'message': f'Connected as user: {username}',
+                                    'message': f'Connected as {"admin dashboard" if is_admin_dashboard else "user"}: {username}',
                                     'environments': verified_environments
                                 }
                                 conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
@@ -641,10 +719,11 @@ class PacketServer:
                     if conn in readable:
                         data = conn.recv(4096).decode('utf-8')
                         if not data:  # Connection closed
-                            print(f"[SERVER] Client {username} disconnected")
+                            dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
+                            print(f"[SERVER] Client {username}{dashboard_text} disconnected")
                             break
 
-                        # Process packets
+                        # Process packets (admin dashboards may send admin requests)
                         buffer += data
 
                         # Process complete lines (packets)
@@ -663,19 +742,22 @@ class PacketServer:
                                     # Process packet for specified environments (intersection with verified)
                                     valid_envs = [env for env in packet_environments if env in verified_environments]
 
-                                    if valid_envs:  # Only process if there are valid environments
+                                    if valid_envs or is_admin_dashboard:  # Admin dashboards can send without environments
                                         self.process_packet(line, addr, valid_envs)
                                 except json.JSONDecodeError:
                                     # If can't parse JSON, use all verified environments
-                                    self.process_packet(line, addr, verified_environments)
+                                    if not is_admin_dashboard:  # Only regular clients send packets
+                                        self.process_packet(line, addr, verified_environments)
 
                 except (ConnectionResetError, BrokenPipeError) as e:
-                    print(f"[SERVER] Connection with {username} was reset: {e}")
+                    dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
+                    print(f"[SERVER] Connection with {username}{dashboard_text} was reset: {e}")
                     break
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    print(f"[SERVER] Error processing data from {username}: {e}")
+                    dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
+                    print(f"[SERVER] Error processing data from {username}{dashboard_text}: {e}")
                     break
 
         except Exception as e:
@@ -683,6 +765,7 @@ class PacketServer:
         finally:
             # Update client status
             with self.clients_lock:
+                # NEW: Handle cleanup for both connection types
                 if addr in self.active_connections:
                     username = self.active_connections[addr]
                     if username in self.clients_by_username:
@@ -692,17 +775,32 @@ class PacketServer:
                     # Remove from active connections
                     del self.active_connections[addr]
 
+                elif addr in self.admin_dashboard_connections:
+                    username = self.admin_dashboard_connections[addr]
+                    if username in self.clients_by_username:
+                        self.clients_by_username[username]['connected'] = False
+                        self.clients_by_username[username]['socket'] = None  # Remove socket reference
+
+                    # Remove from admin dashboard connections
+                    del self.admin_dashboard_connections[addr]
+
+                    # Remove from admin dashboard clients set
+                    if username in self.admin_dashboard_clients:
+                        self.admin_dashboard_clients.remove(username)
+
             # Remove from admin clients if admin
             if username and username in self.admin_clients:
                 self.admin_clients.remove(username)
-                print(f"[SERVER] Admin user {username} disconnected")
+                dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
+                print(f"[SERVER] Admin user {username}{dashboard_text} disconnected")
 
-            # Update environment status
-            with self.environment_lock:
-                for env_name in verified_environments:
-                    if env_name in self.environments and username and username in self.environments[env_name][
-                        'clients']:
-                        self.environments[env_name]['clients'][username]['connected'] = False
+            # Update environment status (only for non-admin dashboard connections)
+            if not is_admin_dashboard:
+                with self.environment_lock:
+                    for env_name in verified_environments:
+                        if env_name in self.environments and username and username in self.environments[env_name][
+                            'clients']:
+                            self.environments[env_name]['clients'][username]['connected'] = False
 
             # Notify UI if registered
             if self.ui_update_callback:
@@ -713,7 +811,9 @@ class PacketServer:
                 conn.close()
             except:
                 pass
-            print(f"[SERVER] Connection with {username or addr} closed")
+
+            dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
+            print(f"[SERVER] Connection with {username or addr}{dashboard_text} closed")
 
     def load_environments_from_db(self, db_file="credentials.db"):
 

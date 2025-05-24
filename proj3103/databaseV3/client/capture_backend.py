@@ -7,7 +7,7 @@ from packet_handler import RealPacketHandler
 
 
 class OptimizedPacketCaptureBackend:
-    def __init__(self, ui=None):
+    def __init__(self, ui=None, is_admin_dashboard=False):
         # UI reference for callbacks
         self.ui = ui
 
@@ -50,6 +50,9 @@ class OptimizedPacketCaptureBackend:
         # Admin support
         self.is_admin = False
         self.admin_stats_callback = None
+
+        # NEW: Admin dashboard flag
+        self.is_admin_dashboard = is_admin_dashboard
 
     def log(self, message):
         """Log a message through the UI"""
@@ -94,13 +97,16 @@ class OptimizedPacketCaptureBackend:
                 self.is_admin = account_info.get('is_admin', False)
 
         if self.is_admin:
-            self.log(f"Logged in as ADMIN user: {self.username}")
+            dashboard_text = " (Dashboard)" if self.is_admin_dashboard else ""
+            self.log(f"Logged in as ADMIN user: {self.username}{dashboard_text}")
 
         # Log the configuration
         self.log(f"Backend configured: host={self.server_host}, port={self.server_port}")
         self.log(f"Username: {self.username}, Environments: {[env.get('env_name') for env in self.environments]}")
         if self.is_admin:
             self.log("*** ADMIN MODE ACTIVE ***")
+            if self.is_admin_dashboard:
+                self.log("*** ADMIN DASHBOARD MODE - Will not appear in client list ***")
 
     def set_admin_stats_callback(self, callback):
         """Set callback for admin statistics"""
@@ -139,8 +145,13 @@ class OptimizedPacketCaptureBackend:
 
         self.running = True
 
-        # Create client
-        self.client = StableSocketClient(self.server_host, self.server_port, self.log)
+        # Create client with admin dashboard flag
+        self.client = StableSocketClient(
+            self.server_host,
+            self.server_port,
+            self.log,
+            is_admin_dashboard=self.is_admin_dashboard  # NEW: Pass admin dashboard flag
+        )
 
         # Set admin callback if admin
         if self.is_admin and self.ui and hasattr(self.ui, 'update_admin_stats'):
@@ -149,20 +160,22 @@ class OptimizedPacketCaptureBackend:
 
         # Set authentication
         env_names = [env.get('env_name') for env in self.environments]
-        self.log(f"Setting auth for environments: {env_names} as user: {self.username}")
+        dashboard_text = " (Dashboard)" if self.is_admin_dashboard else ""
+        self.log(f"Setting auth for environments: {env_names} as user: {self.username}{dashboard_text}")
         self.client.set_auth(self.environments, self.username, self.account_info)
 
         # Register protocol update callback
         self.client.set_protocol_update_callback(self.update_protocol_counts)
 
-        # Create packet handler with real capture capability
-        self.packet_handler = RealPacketHandler(self.capture_interface, self.process_packet)
+        # Only create packet handler for regular clients, not admin dashboard
+        if not self.is_admin_dashboard:
+            # Create packet handler with real capture capability
+            self.packet_handler = RealPacketHandler(self.capture_interface, self.process_packet)
+            # Start the packet handler
+            self.packet_handler.start()
 
         # Start the client
         self.client.start()
-
-        # Start the packet handler
-        self.packet_handler.start()
 
         # Start stats updates with better frequency
         stats_thread = threading.Thread(target=self.update_stats)
@@ -204,6 +217,11 @@ class OptimizedPacketCaptureBackend:
         """Process a packet from the handler and send it to the server"""
         if not self.running:
             return
+
+        # Admin dashboard doesn't process packets - it only monitors
+        if self.is_admin_dashboard:
+            return
+
         try:
             protocol = packet_dict.get('highest_layer', packet_dict.get('protocol', 'Other'))
             if protocol in self.local_protocol_counts:
@@ -267,7 +285,7 @@ class OptimizedPacketCaptureBackend:
                         # Update UI
                         if self.ui:
                             try:
-                                if packet_count_changed:
+                                if packet_count_changed and not self.is_admin_dashboard:  # Don't update packet count for dashboard
                                     self.ui.update_packet_count(self.packet_count)
                                     last_packet_count = new_packet_count
 
@@ -295,3 +313,49 @@ class OptimizedPacketCaptureBackend:
 # For backward compatibility
 class StablePacketCaptureBackend(OptimizedPacketCaptureBackend):
     pass
+
+
+# NEW: Specialized backend for admin dashboard
+class AdminDashboardBackend(OptimizedPacketCaptureBackend):
+    """Backend specifically for admin dashboard connections"""
+
+    def __init__(self, ui=None):
+        super().__init__(ui, is_admin_dashboard=True)
+
+    def start(self):
+        """Override start to skip packet capture setup"""
+        if self.running:
+            return
+
+        self.running = True
+
+        # Create client with admin dashboard flag
+        self.client = StableSocketClient(
+            self.server_host,
+            self.server_port,
+            self.log,
+            is_admin_dashboard=True  # Mark as admin dashboard
+        )
+
+        # Set admin callback if admin
+        if self.is_admin and self.ui and hasattr(self.ui, 'update_admin_stats'):
+            self.client.set_admin_stats_callback(self.ui.update_admin_stats)
+            self.log("Admin stats callback configured for dashboard")
+
+        # Set authentication
+        env_names = [env.get('env_name') for env in self.environments]
+        self.log(f"Setting auth for admin dashboard: {env_names} as user: {self.username}")
+        self.client.set_auth(self.environments, self.username, self.account_info)
+
+        # Register protocol update callback
+        self.client.set_protocol_update_callback(self.update_protocol_counts)
+
+        # Note: No packet handler for admin dashboard - monitoring only
+
+        # Start the client
+        self.client.start()
+
+        # Start stats updates
+        stats_thread = threading.Thread(target=self.update_stats)
+        stats_thread.daemon = True
+        stats_thread.start()
