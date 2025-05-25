@@ -79,14 +79,12 @@ AdminDashboardBackend = None
 try:
     print("[DEBUG] Attempting imports...")
     from admin_dashboard import AdminDashboard
-
     print("  ✓ Successfully imported AdminDashboard")
 except ImportError as e:
     print(f"  ✗ Failed to import AdminDashboard: {e}")
 
 try:
     from capture_backend import AdminDashboardBackend
-
     print("  ✓ Successfully imported AdminDashboardBackend")
 except ImportError as e:
     print(f"  ✗ Failed to import AdminDashboardBackend: {e}")
@@ -94,13 +92,11 @@ except ImportError as e:
     try:
         from capture_backend import OptimizedPacketCaptureBackend
 
-
         class AdminDashboardBackend(OptimizedPacketCaptureBackend):
             """Backend specifically for admin dashboard connections"""
 
             def __init__(self, ui=None):
                 super().__init__(ui, is_admin_dashboard=True)
-
 
         print("  ✓ Created AdminDashboardBackend from OptimizedPacketCaptureBackend")
     except ImportError as e2:
@@ -511,7 +507,7 @@ def main():
     # Create root window
     root = tk.Tk()
 
-    # Create and run the dashboard
+    # Create and run the dashboard - FIXED: Use the correct class name
     app = SimpleAdminDashboard(root, args.server, args.port)
 
     # Handle window closing

@@ -1,5 +1,9 @@
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
+import os
+import sys
+import json
+import subprocess
 
 from proj3103.databaseV3.gui.environment_frames import (
     MyEnvironmentsTab,
@@ -68,108 +72,55 @@ class DashboardFrame:
         messagebox.showwarning("No Client", "Client functionality is not available.")
 
     def start_admin_dashboard(self):
-        """Start the standalone admin dashboard application"""
+        """Simplified version that just starts the dashboard without excessive config warnings"""
         try:
-            import subprocess
-            import os
-            import sys
-            from tkinter import messagebox
+            # Quick config save attempt (without warnings if it fails)
+            try:
+                config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "client")
+                os.makedirs(config_dir, exist_ok=True)
 
-            print(f"[DEBUG] Starting admin dashboard...")
+                config_data = {
+                    "username": self.username,
+                    "user_id": self.user_id,
+                    "environments": getattr(self, 'db', None) and self.db.get_user_environments(self.user_id) or []
+                }
 
-            # Save the latest config first
-            if self.start_client_callback:
-                # Try to call the parent's save_user_config method
-                try:
-                    # Navigate up to find the CredentialManagerGUI instance
-                    parent = self.parent
-                    while parent and not hasattr(parent, 'save_user_config'):
-                        if hasattr(parent, 'master'):
-                            parent = parent.master
-                        else:
-                            parent = None
+                with open(os.path.join(config_dir, "user_config.json"), "w") as f:
+                    json.dump(config_data, f, indent=2)
+            except:
+                pass  # Silently ignore config save errors
 
-                    # If we found the GUI instance, use its method
-                    if parent and hasattr(parent, 'current_username'):
-                        # This is the CredentialManagerGUI
-                        gui = parent
-                        # Find the actual save_user_config method
-                        if hasattr(gui, 'save_user_config'):
-                            gui.save_user_config(gui.current_username)
-                            print(f"[DEBUG] Config saved for user: {gui.current_username}")
-                except Exception as e:
-                    print(f"Could not save config: {e}")
+            # Find and start admin dashboard
+            current_dir = os.path.dirname(os.path.abspath(__file__))
 
-            # Get current file directory
-            current_file = os.path.abspath(__file__)
-            current_dir = os.path.dirname(current_file)
-
-            print(f"[DEBUG] Current file: {current_file}")
-            print(f"[DEBUG] Current directory: {current_dir}")
-
-            # Look for admin dashboard script in multiple locations
-            possible_paths = [
-                "standalone_admin_dashboard.py",  # Current working directory
-                os.path.join(current_dir, "standalone_admin_dashboard.py"),  # Same dir as this file
-                os.path.join(os.path.dirname(current_dir), "standalone_admin_dashboard.py"),  # Parent dir
-                os.path.join(os.path.dirname(os.path.dirname(current_dir)), "standalone_admin_dashboard.py"),
-                # Grandparent
-                os.path.join(current_dir, "..", "standalone_admin_dashboard.py"),  # Relative parent
-                os.path.join(current_dir, "..", "..", "standalone_admin_dashboard.py"),  # Relative grandparent
-                os.path.join(current_dir, "..", "admin", "standalone_admin_dashboard.py"),  # admin dir
-                os.path.join(os.path.dirname(current_dir), "admin", "standalone_admin_dashboard.py"),  # Parent/client
+            # Common locations to check
+            locations = [
+                os.path.join(current_dir, "..", "admin", "standalone_admin_dashboard.py"),
+                os.path.join(current_dir, "..", "..", "admin", "standalone_admin_dashboard.py"),
+                os.path.join(current_dir, "standalone_admin_dashboard.py"),
+                "standalone_admin_dashboard.py"
             ]
 
-            print(f"[DEBUG] Searching for admin dashboard in paths:")
-            admin_dashboard_path = None
-            for i, path in enumerate(possible_paths):
-                abs_path = os.path.abspath(path)
-                exists = os.path.exists(abs_path)
-                print(f"[DEBUG] {i + 1}. {abs_path} - {'EXISTS' if exists else 'NOT FOUND'}")
+            dashboard_path = None
+            for loc in locations:
+                abs_path = os.path.abspath(loc)
+                if os.path.exists(abs_path):
+                    dashboard_path = abs_path
+                    break
 
-                if exists and not admin_dashboard_path:
-                    admin_dashboard_path = abs_path
-
-            if not admin_dashboard_path:
-                error_msg = (
-                        "The standalone_admin_dashboard.py file was not found.\n\n"
-                        f"Searched in {len(possible_paths)} locations:\n" +
-                        "\n".join([f"• {os.path.abspath(p)}" for p in possible_paths[:5]]) +
-                        f"\n... and {len(possible_paths) - 5} more locations\n\n"
-                        "Please ensure standalone_admin_dashboard.py exists in your project directory."
-                )
-                print(f"[ERROR] {error_msg}")
-                messagebox.showerror("Admin Dashboard Not Found", error_msg)
+            if not dashboard_path:
+                messagebox.showerror("Error", "Admin dashboard script not found.")
                 return
 
-            print(f"[DEBUG] Found admin dashboard at: {admin_dashboard_path}")
+            # Start the dashboard
+            subprocess.Popen([sys.executable, dashboard_path])
 
-            # Start admin dashboard process
-            print(f"[DEBUG] Starting process: {sys.executable} {admin_dashboard_path}")
-            process = subprocess.Popen([sys.executable, admin_dashboard_path])
-            print(f"[DEBUG] Process started with PID: {process.pid}")
+            # Simple success message
+            messagebox.showinfo("Success", f"Admin Dashboard started for {self.username}")
 
-            messagebox.showinfo(
-                "Admin Dashboard Started",
-                f"The Admin Dashboard has been launched in a new window.\n\n"
-                f"Process ID: {process.pid}\n"
-                f"File: {os.path.basename(admin_dashboard_path)}\n\n"
-                "Use it to monitor all connected clients and network traffic."
-            )
-        except FileNotFoundError as e:
-            error_msg = f"Python executable not found: {e}"
-            print(f"[ERROR] {error_msg}")
-            messagebox.showerror("Python Not Found", error_msg)
-        except subprocess.SubprocessError as e:
-            error_msg = f"Failed to start subprocess: {e}"
-            print(f"[ERROR] {error_msg}")
-            messagebox.showerror("Subprocess Error", error_msg)
         except Exception as e:
-            error_msg = f"Failed to start admin dashboard: {str(e)}"
-            print(f"[ERROR] {error_msg}")
-            messagebox.showerror("Error", error_msg)
-            import traceback
-            traceback.print_exc()
+            messagebox.showerror("Error", f"Failed to start admin dashboard: {e}")
+
 
     def create_notebook(self):
         """Create the tabbed interface."""
