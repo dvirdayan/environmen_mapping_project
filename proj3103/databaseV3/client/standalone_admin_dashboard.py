@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone Admin Dashboard - Fixed import version
+Standalone Admin Dashboard - Fixed version with proper credential detection
 """
 
 import tkinter as tk
@@ -91,6 +91,108 @@ except ImportError as e:
 print()
 
 
+class AdminLoginDialog:
+    """Dialog for admin credentials if auto-detection fails"""
+
+    def __init__(self, parent):
+        self.result = None
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Admin Login")
+        self.dialog.geometry("400x300")
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Center the dialog
+        self.dialog.update_idletasks()
+        x = (self.dialog.winfo_screenwidth() // 2) - (400 // 2)
+        y = (self.dialog.winfo_screenheight() // 2) - (300 // 2)
+        self.dialog.geometry(f"400x300+{x}+{y}")
+
+        self.setup_ui()
+
+    def setup_ui(self):
+        """Setup the login dialog UI"""
+        main_frame = ttk.Frame(self.dialog, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Title
+        title_label = ttk.Label(main_frame, text="Admin Login Required",
+                                font=("Helvetica", 14, "bold"))
+        title_label.pack(pady=(0, 20))
+
+        # Info text
+        info_text = ttk.Label(main_frame,
+                              text="No admin credentials found automatically.\nPlease enter your admin credentials:",
+                              justify=tk.CENTER)
+        info_text.pack(pady=(0, 20))
+
+        # Form frame
+        form_frame = ttk.Frame(main_frame)
+        form_frame.pack(fill=tk.X, pady=(0, 20))
+
+        # Username
+        ttk.Label(form_frame, text="Username:").pack(anchor=tk.W)
+        self.username_var = tk.StringVar()
+        username_entry = ttk.Entry(form_frame, textvariable=self.username_var, width=30)
+        username_entry.pack(fill=tk.X, pady=(5, 10))
+        username_entry.focus()
+
+        # Environment
+        ttk.Label(form_frame, text="Environment:").pack(anchor=tk.W)
+        self.env_var = tk.StringVar(value="default")
+        env_entry = ttk.Entry(form_frame, textvariable=self.env_var, width=30)
+        env_entry.pack(fill=tk.X, pady=(5, 10))
+
+        # Environment password
+        ttk.Label(form_frame, text="Environment Password:").pack(anchor=tk.W)
+        self.env_pass_var = tk.StringVar()
+        env_pass_entry = ttk.Entry(form_frame, textvariable=self.env_pass_var,
+                                   show="*", width=30)
+        env_pass_entry.pack(fill=tk.X, pady=(5, 20))
+
+        # Buttons
+        button_frame = ttk.Frame(form_frame)
+        button_frame.pack(fill=tk.X)
+
+        ttk.Button(button_frame, text="Login",
+                   command=self.login_clicked).pack(side=tk.RIGHT, padx=(5, 0))
+        ttk.Button(button_frame, text="Cancel",
+                   command=self.cancel_clicked).pack(side=tk.RIGHT)
+
+        # Bind Enter key
+        self.dialog.bind('<Return>', lambda e: self.login_clicked())
+
+    def login_clicked(self):
+        """Handle login button click"""
+        username = self.username_var.get().strip()
+        env_name = self.env_var.get().strip()
+        env_pass = self.env_pass_var.get().strip()
+
+        if not username:
+            messagebox.showerror("Error", "Username is required")
+            return
+
+        if not env_name:
+            messagebox.showerror("Error", "Environment name is required")
+            return
+
+        self.result = {
+            'username': username,
+            'environments': [{'env_name': env_name, 'env_password': env_pass}],
+            'account_info': {
+                'username': username,
+                'is_admin': True
+            }
+        }
+
+        self.dialog.destroy()
+
+    def cancel_clicked(self):
+        """Handle cancel button click"""
+        self.result = None
+        self.dialog.destroy()
+
+
 class SimpleAdminDashboard:
     """Simple admin dashboard with fallback UI"""
 
@@ -104,7 +206,7 @@ class SimpleAdminDashboard:
         self.backend = None
         self.dashboard = None
 
-        # Try to load user config for admin credentials
+        # Admin credentials
         self.username = None
         self.environments = []
         self.account_info = None
@@ -129,6 +231,12 @@ class SimpleAdminDashboard:
         # Connection controls
         controls_frame = ttk.Frame(header_frame)
         controls_frame.pack(side=tk.RIGHT)
+
+        # User info
+        self.user_var = tk.StringVar(value="No User")
+        self.user_label = ttk.Label(controls_frame, textvariable=self.user_var,
+                                    font=("Arial", 10, "italic"))
+        self.user_label.pack(side=tk.LEFT, padx=10)
 
         # Connection status
         self.status_var = tk.StringVar(value="Disconnected")
@@ -196,70 +304,123 @@ class SimpleAdminDashboard:
 
         help_text = tk.Text(help_frame, wrap=tk.WORD, height=10)
         help_text.pack(fill=tk.BOTH, expand=True)
-        help_text.insert(tk.END, help_content)
+        help_text.insert(tk.END, """
+Troubleshooting Steps:
+
+1. Ensure all required Python modules are in the correct location
+2. Check that the server is running on the specified host and port
+3. Verify admin credentials are correctly configured
+4. Check console output for detailed error messages
+
+If you continue to have issues:
+- Try running from the main client directory
+- Check file permissions
+- Verify network connectivity to the server
+        """)
         help_text.config(state=tk.DISABLED)
 
     def load_admin_config(self):
         """Try to load admin configuration from user_config.json"""
         config_paths = [
             "user_config.json",
-            os.path.join("../../client", "user_config.json"),
-            os.path.join("../../..", "client", "user_config.json"),
             os.path.join(os.path.dirname(__file__), "user_config.json"),
-            os.path.join(os.path.dirname(__file__), "../../..", "user_config.json"),
+            os.path.join(os.path.dirname(__file__), "..", "user_config.json"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "user_config.json"),
+            os.path.join(os.path.dirname(__file__), "..", "..", "..", "user_config.json"),
         ]
+
+        print("[DEBUG] Searching for user_config.json...")
 
         for config_path in config_paths:
             abs_path = os.path.abspath(config_path)
+            print(f"[DEBUG] Checking: {abs_path}")
+
             if os.path.exists(abs_path):
                 try:
                     print(f"[DEBUG] Loading config from: {abs_path}")
                     with open(abs_path, 'r') as f:
                         config = json.load(f)
 
-                    self.username = config.get('username')
+                    username = config.get('username')
                     user_id = config.get('user_id')
                     environments = config.get('environments', [])
 
-                    # Check if user is admin
-                    is_admin = False
+                    print(f"[DEBUG] Config loaded - Username: {username}")
+                    print(f"[DEBUG] Environments: {[env.get('env_name') for env in environments]}")
+
+                    # Check if user has admin privileges in any environment
+                    admin_environments = []
                     for env in environments:
                         if env.get('is_admin', False):
-                            is_admin = True
-                            break
+                            admin_environments.append(env)
+                            print(f"[DEBUG] Found admin environment: {env.get('env_name')}")
 
-                    if is_admin:
-                        self.environments = environments
+                    if admin_environments:
+                        self.username = username
+                        self.environments = admin_environments
                         self.account_info = {
                             "user_id": user_id,
-                            "username": self.username,
+                            "username": username,
                             "is_admin": True
                         }
 
-                        # Update window title with username
-                        self.root.title(f"Network Admin Dashboard - {self.username}")
+                        # Update UI
+                        self.user_var.set(f"User: {username} (Admin)")
+                        self.root.title(f"Network Admin Dashboard - {username}")
 
-                        print(f"[DEBUG] Loaded admin config for user: {self.username}")
-                        return
+                        print(f"[DEBUG] Successfully loaded admin config for user: {username}")
+                        return True
+
+                    else:
+                        print(f"[DEBUG] User {username} found but has no admin privileges")
 
                 except Exception as e:
                     print(f"[ERROR] Error loading config from {abs_path}: {e}")
 
-        print("[DEBUG] No admin config found. Using default credentials.")
-        self.username = "AdminUser"
-        self.environments = [{'env_name': 'default', 'env_password': 'admin_pass'}]
-        self.account_info = {
-            "username": self.username,
-            "is_admin": True
-        }
+        print("[DEBUG] No valid admin config found.")
+
+        # Show login dialog
+        if self.prompt_for_credentials():
+            return True
+
+        return False
+
+    def prompt_for_credentials(self):
+        """Prompt user for admin credentials"""
+        print("[DEBUG] Prompting for admin credentials...")
+
+        dialog = AdminLoginDialog(self.root)
+        self.root.wait_window(dialog.dialog)
+
+        if dialog.result:
+            self.username = dialog.result['username']
+            self.environments = dialog.result['environments']
+            self.account_info = dialog.result['account_info']
+
+            # Update UI
+            self.user_var.set(f"User: {self.username} (Admin)")
+            self.root.title(f"Network Admin Dashboard - {self.username}")
+
+            print(f"[DEBUG] Manual admin credentials set for user: {self.username}")
+            return True
+
+        print("[DEBUG] No credentials provided by user")
+        return False
 
     def connect_to_server(self):
         """Connect to the packet capture server"""
+        if not self.username:
+            messagebox.showerror("Error", "No admin credentials available. Please restart and provide credentials.")
+            return
+
         if not AdminDashboardBackend:
             messagebox.showerror("Error", "AdminDashboardBackend not available. Cannot connect to server.")
             return
 
         try:
+            print(f"[DEBUG] Connecting as admin user: {self.username}")
+            print(f"[DEBUG] Admin environments: {[env.get('env_name') for env in self.environments]}")
+
             # Create backend with admin dashboard flag
             self.backend = AdminDashboardBackend()
 
@@ -267,7 +428,7 @@ class SimpleAdminDashboard:
             self.backend.configure(
                 server_host=self.server_host,
                 server_port=self.server_port,
-                username=self.username,
+                username=self.username,  # Use the actual username from config
                 environments=self.environments,
                 account_info=self.account_info
             )
@@ -275,6 +436,7 @@ class SimpleAdminDashboard:
             # Set admin callback
             if self.dashboard and hasattr(self.dashboard, 'update_admin_data'):
                 self.backend.set_admin_stats_callback(self.dashboard.update_admin_data)
+                print("[DEBUG] Admin stats callback set")
 
             # Connect to server
             self.backend.start()
@@ -285,7 +447,7 @@ class SimpleAdminDashboard:
             self.connect_btn.config(state="disabled")
             self.disconnect_btn.config(state="normal")
 
-            print(f"[DEBUG] Connected to server {self.server_host}:{self.server_port}")
+            print(f"[DEBUG] Connected to server {self.server_host}:{self.server_port} as {self.username}")
 
         except Exception as e:
             error_msg = f"Failed to connect to server: {e}"

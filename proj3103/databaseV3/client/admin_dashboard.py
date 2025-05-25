@@ -7,7 +7,7 @@ import threading
 
 
 class AdminDashboard(ttk.Frame):
-    """Admin dashboard for monitoring all connected clients"""
+    """Admin dashboard for monitoring all connected clients - Enhanced with debugging"""
 
     def __init__(self, parent, backend=None):
         super().__init__(parent)
@@ -23,9 +23,16 @@ class AdminDashboard(ttk.Frame):
 
         # Update tracking
         self.last_update = 0
-        self.update_interval = 1.0  # Update every second
+        self.update_interval = 1.0
+        self.stats_requests_sent = 0
+        self.stats_responses_received = 0
+
+        # Debug info
+        self.debug_messages = []
+        self.max_debug_messages = 100
 
         self.setup_ui()
+        self.start_auto_refresh()
 
     def setup_ui(self):
         """Setup the admin dashboard UI"""
@@ -33,10 +40,19 @@ class AdminDashboard(ttk.Frame):
         main_frame = ttk.Frame(self, padding="10")
         main_frame.pack(fill=tk.BOTH, expand=True)
 
-        # Title
-        title_label = ttk.Label(main_frame, text="Admin Dashboard - Network Monitor",
+        # Title with debug info
+        title_frame = ttk.Frame(main_frame)
+        title_frame.pack(fill=tk.X, pady=(0, 10))
+
+        title_label = ttk.Label(title_frame, text="Admin Dashboard - Network Monitor",
                                 font=("Helvetica", 16, "bold"))
-        title_label.pack(pady=(0, 10))
+        title_label.pack(side=tk.LEFT)
+
+        # Debug info in title
+        self.debug_info_var = tk.StringVar(value="Debug: Starting...")
+        debug_label = ttk.Label(title_frame, textvariable=self.debug_info_var,
+                                font=("Helvetica", 9), foreground="blue")
+        debug_label.pack(side=tk.RIGHT)
 
         # Stats summary frame
         stats_frame = ttk.LabelFrame(main_frame, text="Global Statistics", padding="10")
@@ -46,26 +62,31 @@ class AdminDashboard(ttk.Frame):
         stats_grid = ttk.Frame(stats_frame)
         stats_grid.pack(fill=tk.X)
 
-        # Total clients
+        # Stats variables
         ttk.Label(stats_grid, text="Connected Clients:", font=("Helvetica", 10, "bold")).grid(
             row=0, column=0, sticky=tk.W, padx=5)
         self.total_clients_var = tk.StringVar(value="0")
         ttk.Label(stats_grid, textvariable=self.total_clients_var, font=("Helvetica", 10)).grid(
             row=0, column=1, sticky=tk.W, padx=5)
 
-        # Total packets
         ttk.Label(stats_grid, text="Total Packets:", font=("Helvetica", 10, "bold")).grid(
             row=0, column=2, sticky=tk.W, padx=20)
         self.total_packets_var = tk.StringVar(value="0")
         ttk.Label(stats_grid, textvariable=self.total_packets_var, font=("Helvetica", 10)).grid(
             row=0, column=3, sticky=tk.W, padx=5)
 
-        # Packets per second
-        ttk.Label(stats_grid, text="Packets/sec:", font=("Helvetica", 10, "bold")).grid(
+        ttk.Label(stats_grid, text="Requests/Responses:", font=("Helvetica", 10, "bold")).grid(
             row=0, column=4, sticky=tk.W, padx=20)
-        self.pps_var = tk.StringVar(value="0")
-        ttk.Label(stats_grid, textvariable=self.pps_var, font=("Helvetica", 10)).grid(
+        self.requests_var = tk.StringVar(value="0/0")
+        ttk.Label(stats_grid, textvariable=self.requests_var, font=("Helvetica", 10)).grid(
             row=0, column=5, sticky=tk.W, padx=5)
+
+        # Last update time
+        ttk.Label(stats_grid, text="Last Update:", font=("Helvetica", 10, "bold")).grid(
+            row=1, column=0, sticky=tk.W, padx=5)
+        self.last_update_var = tk.StringVar(value="Never")
+        ttk.Label(stats_grid, textvariable=self.last_update_var, font=("Helvetica", 10)).grid(
+            row=1, column=1, sticky=tk.W, padx=5)
 
         # Create notebook for tabbed interface
         self.notebook = ttk.Notebook(main_frame)
@@ -76,15 +97,15 @@ class AdminDashboard(ttk.Frame):
         self.notebook.add(clients_tab, text="Connected Clients")
         self.setup_clients_tab(clients_tab)
 
+        # Debug Tab
+        debug_tab = ttk.Frame(self.notebook)
+        self.notebook.add(debug_tab, text="Debug Log")
+        self.setup_debug_tab(debug_tab)
+
         # Protocol Distribution Tab
         protocol_tab = ttk.Frame(self.notebook)
         self.notebook.add(protocol_tab, text="Protocol Distribution")
         self.setup_protocol_tab(protocol_tab)
-
-        # Environment Stats Tab
-        env_tab = ttk.Frame(self.notebook)
-        self.notebook.add(env_tab, text="Environment Stats")
-        self.setup_environment_tab(env_tab)
 
         # Control buttons
         control_frame = ttk.Frame(main_frame)
@@ -92,18 +113,26 @@ class AdminDashboard(ttk.Frame):
 
         ttk.Button(control_frame, text="Refresh Now",
                    command=self.request_admin_stats).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="Export Stats",
-                   command=self.export_stats).pack(side=tk.LEFT, padx=5)
-        ttk.Button(control_frame, text="Clear Stats",
-                   command=self.clear_stats).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Test Connection",
+                   command=self.test_connection).pack(side=tk.LEFT, padx=5)
+        ttk.Button(control_frame, text="Clear Debug",
+                   command=self.clear_debug_log).pack(side=tk.LEFT, padx=5)
 
         # Auto-refresh checkbox
         self.auto_refresh_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(control_frame, text="Auto Refresh",
+        ttk.Checkbutton(control_frame, text="Auto Refresh (5s)",
                         variable=self.auto_refresh_var).pack(side=tk.LEFT, padx=20)
 
     def setup_clients_tab(self, parent):
         """Setup the connected clients tab"""
+        # Status frame
+        status_frame = ttk.Frame(parent)
+        status_frame.pack(fill=tk.X, padx=5, pady=5)
+
+        self.client_status_var = tk.StringVar(value="No client data received yet")
+        ttk.Label(status_frame, textvariable=self.client_status_var,
+                  font=("Helvetica", 10, "italic")).pack()
+
         # Create treeview for clients
         columns = ("username", "ip", "port", "packets", "protocols", "environments", "status", "uptime")
         self.clients_tree = ttk.Treeview(parent, columns=columns, show="headings", height=15)
@@ -133,126 +162,168 @@ class AdminDashboard(ttk.Frame):
         self.clients_tree.configure(yscrollcommand=scrollbar.set)
 
         # Pack
-        self.clients_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.clients_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, pady=5)
 
-        # Context menu
-        self.create_client_context_menu()
+    def setup_debug_tab(self, parent):
+        """Setup the debug log tab"""
+        # Debug log
+        self.debug_text = scrolledtext.ScrolledText(parent, wrap=tk.WORD, height=20, width=80)
+        self.debug_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Add initial debug message
+        self.add_debug_message("Admin Dashboard initialized")
+        if self.backend:
+            self.add_debug_message(f"Backend connected: {type(self.backend).__name__}")
+            self.add_debug_message(f"Backend is_admin: {getattr(self.backend, 'is_admin', 'Unknown')}")
+            self.add_debug_message(f"Backend username: {getattr(self.backend, 'username', 'Unknown')}")
+        else:
+            self.add_debug_message("WARNING: No backend provided!")
 
     def setup_protocol_tab(self, parent):
         """Setup the protocol distribution tab"""
-        # Create two frames - one for global stats, one for per-client
-        paned = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True)
-
-        # Global protocol stats
-        global_frame = ttk.LabelFrame(paned, text="Global Protocol Distribution", padding="10")
-        paned.add(global_frame, weight=1)
-
         # Protocol treeview
-        columns = ("protocol", "count", "percentage", "rate")
-        self.protocol_tree = ttk.Treeview(global_frame, columns=columns, show="headings", height=10)
+        columns = ("protocol", "count", "percentage")
+        self.protocol_tree = ttk.Treeview(parent, columns=columns, show="headings", height=10)
 
         self.protocol_tree.heading("protocol", text="Protocol")
         self.protocol_tree.heading("count", text="Total Count")
         self.protocol_tree.heading("percentage", text="Percentage")
-        self.protocol_tree.heading("rate", text="Rate/sec")
 
         self.protocol_tree.column("protocol", width=100)
         self.protocol_tree.column("count", width=100)
         self.protocol_tree.column("percentage", width=100)
-        self.protocol_tree.column("rate", width=100)
 
-        self.protocol_tree.pack(fill=tk.BOTH, expand=True)
+        self.protocol_tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Per-client protocol frame
-        client_frame = ttk.LabelFrame(paned, text="Per-Client Protocol Breakdown", padding="10")
-        paned.add(client_frame, weight=1)
+    def add_debug_message(self, message):
+        """Add a debug message to the log"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        full_message = f"[{timestamp}] {message}"
 
-        # Client protocol treeview
-        columns = ("client", "tcp", "udp", "http", "https", "other")
-        self.client_protocol_tree = ttk.Treeview(client_frame, columns=columns, show="headings", height=10)
+        self.debug_messages.append(full_message)
+        if len(self.debug_messages) > self.max_debug_messages:
+            self.debug_messages.pop(0)
 
-        self.client_protocol_tree.heading("client", text="Client")
-        self.client_protocol_tree.heading("tcp", text="TCP")
-        self.client_protocol_tree.heading("udp", text="UDP")
-        self.client_protocol_tree.heading("http", text="HTTP")
-        self.client_protocol_tree.heading("https", text="HTTPS")
-        self.client_protocol_tree.heading("other", text="Other")
-
-        self.client_protocol_tree.pack(fill=tk.BOTH, expand=True)
-
-    def setup_environment_tab(self, parent):
-        """Setup the environment statistics tab"""
-        # Environment stats treeview
-        columns = ("environment", "clients", "packets", "top_protocol", "activity")
-        self.env_tree = ttk.Treeview(parent, columns=columns, show="headings")
-
-        self.env_tree.heading("environment", text="Environment")
-        self.env_tree.heading("clients", text="Active Clients")
-        self.env_tree.heading("packets", text="Total Packets")
-        self.env_tree.heading("top_protocol", text="Top Protocol")
-        self.env_tree.heading("activity", text="Activity Level")
-
-        self.env_tree.column("environment", width=150)
-        self.env_tree.column("clients", width=100)
-        self.env_tree.column("packets", width=100)
-        self.env_tree.column("top_protocol", width=100)
-        self.env_tree.column("activity", width=120)
-
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=self.env_tree.yview)
-        self.env_tree.configure(yscrollcommand=scrollbar.set)
-
-        self.env_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-    def create_client_context_menu(self):
-        """Create context menu for client actions"""
-        self.context_menu = tk.Menu(self.clients_tree, tearoff=0)
-        self.context_menu.add_command(label="View Details", command=self.view_client_details)
-        self.context_menu.add_command(label="Disconnect Client", command=self.disconnect_client)
-        self.context_menu.add_separator()
-        self.context_menu.add_command(label="Copy Info", command=self.copy_client_info)
-
-        self.clients_tree.bind("<Button-3>", self.show_context_menu)
-
-    def show_context_menu(self, event):
-        """Show context menu"""
+        # Update debug text widget
         try:
-            self.context_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.context_menu.grab_release()
+            self.debug_text.insert(tk.END, full_message + "\n")
+            self.debug_text.see(tk.END)
+        except:
+            pass  # Widget might not be ready yet
+
+        print(f"[ADMIN_DEBUG] {full_message}")
+
+    def clear_debug_log(self):
+        """Clear the debug log"""
+        self.debug_messages.clear()
+        self.debug_text.delete(1.0, tk.END)
+        self.add_debug_message("Debug log cleared")
+
+    def test_connection(self):
+        """Test the connection to backend"""
+        self.add_debug_message("Testing connection...")
+
+        if not self.backend:
+            self.add_debug_message("ERROR: No backend available")
+            return
+
+        # Check backend attributes
+        attrs_to_check = ['is_admin', 'username', 'client', 'running', 'connected']
+        for attr in attrs_to_check:
+            value = getattr(self.backend, attr, 'Not found')
+            self.add_debug_message(f"Backend.{attr}: {value}")
+
+        # Test admin stats request
+        self.request_admin_stats()
+
+    def start_auto_refresh(self):
+        """Start automatic refresh of admin stats"""
+
+        def auto_refresh_worker():
+            while True:
+                try:
+                    if self.auto_refresh_var.get():
+                        self.request_admin_stats()
+                    time.sleep(5)  # Refresh every 5 seconds
+                except Exception as e:
+                    self.add_debug_message(f"Auto-refresh error: {e}")
+                    time.sleep(5)
+
+        refresh_thread = threading.Thread(target=auto_refresh_worker, daemon=True)
+        refresh_thread.start()
+        self.add_debug_message("Auto-refresh started (5 second interval)")
 
     def request_admin_stats(self):
         """Request admin statistics from server"""
-        if self.backend and hasattr(self.backend, 'request_admin_stats'):
+        self.stats_requests_sent += 1
+        self.requests_var.set(f"{self.stats_requests_sent}/{self.stats_responses_received}")
+
+        self.add_debug_message(f"Requesting admin stats (#{self.stats_requests_sent})")
+
+        if not self.backend:
+            self.add_debug_message("ERROR: No backend to request stats from")
+            return
+
+        if not hasattr(self.backend, 'request_admin_stats'):
+            self.add_debug_message("ERROR: Backend has no request_admin_stats method")
+            return
+
+        try:
             self.backend.request_admin_stats()
+            self.add_debug_message("Admin stats request sent to backend")
+        except Exception as e:
+            self.add_debug_message(f"ERROR requesting admin stats: {e}")
 
     def update_admin_data(self, admin_data):
         """Update dashboard with admin data from server"""
-        current_time = time.time()
-        if current_time - self.last_update < 0.5:  # Throttle updates
-            return
+        self.stats_responses_received += 1
+        self.requests_var.set(f"{self.stats_requests_sent}/{self.stats_responses_received}")
 
+        current_time = time.time()
         self.last_update = current_time
+        self.last_update_var.set(datetime.now().strftime("%H:%M:%S"))
+
+        self.add_debug_message(f"Received admin data (#{self.stats_responses_received})")
+        self.add_debug_message(
+            f"Data keys: {list(admin_data.keys()) if isinstance(admin_data, dict) else type(admin_data)}")
+
+        # Log the data structure for debugging
+        if isinstance(admin_data, dict):
+            if 'clients' in admin_data:
+                client_count = len(admin_data['clients']) if isinstance(admin_data['clients'], dict) else 0
+                self.add_debug_message(f"Clients in data: {client_count}")
+
+                # Log client details
+                if isinstance(admin_data['clients'], dict):
+                    for client_id, client_info in admin_data['clients'].items():
+                        username = client_info.get('username', 'Unknown')
+                        ip = client_info.get('ip', 'Unknown')
+                        self.add_debug_message(f"  Client {client_id}: {username} @ {ip}")
+            else:
+                self.add_debug_message("No 'clients' key in admin data")
+
+            if 'global_protocols' in admin_data:
+                self.add_debug_message(f"Protocol data: {admin_data['global_protocols']}")
 
         # Update client data
-        if 'clients' in admin_data:
+        if isinstance(admin_data, dict) and 'clients' in admin_data:
             self.client_data = admin_data['clients']
             self.update_clients_display()
+        else:
+            self.add_debug_message("WARNING: No client data in response")
 
         # Update protocol counts
-        if 'global_protocols' in admin_data:
+        if isinstance(admin_data, dict) and 'global_protocols' in admin_data:
             self.global_protocol_counts = admin_data['global_protocols']
             self.update_protocol_display()
 
-        # Update environment data
-        if 'environments' in admin_data:
-            self.update_environment_display(admin_data['environments'])
-
         # Update summary stats
         self.update_summary_stats()
+
+        # Update debug info
+        self.debug_info_var.set(
+            f"Last update: {datetime.now().strftime('%H:%M:%S')} | Clients: {len(self.client_data)}")
 
     def update_clients_display(self):
         """Update the clients treeview"""
@@ -260,34 +331,50 @@ class AdminDashboard(ttk.Frame):
         for item in self.clients_tree.get_children():
             self.clients_tree.delete(item)
 
+        client_count = len(self.client_data) if isinstance(self.client_data, dict) else 0
+        self.add_debug_message(f"Updating client display with {client_count} clients")
+
+        if not self.client_data:
+            self.client_status_var.set("No clients connected")
+            return
+
         # Add clients
+        displayed_count = 0
         for client_id, client_info in self.client_data.items():
-            username = client_info.get('username', 'Unknown')
-            ip = client_info.get('ip', '')
-            port = client_info.get('port', '')
-            packet_count = client_info.get('packet_count', 0)
+            try:
+                username = client_info.get('username', 'Unknown')
+                ip = client_info.get('ip', '')
+                port = client_info.get('port', '')
+                packet_count = client_info.get('packet_count', 0)
 
-            # Find top protocol
-            protocols = client_info.get('protocol_counts', {})
-            if protocols:
-                top_protocol = max(protocols.items(), key=lambda x: x[1])[0]
-            else:
-                top_protocol = "N/A"
+                # Find top protocol
+                protocols = client_info.get('protocol_counts', {})
+                if protocols:
+                    top_protocol = max(protocols.items(), key=lambda x: x[1])[0]
+                else:
+                    top_protocol = "N/A"
 
-            environments = ", ".join(client_info.get('environments', []))
-            status = "Connected" if client_info.get('connected', False) else "Disconnected"
+                environments = ", ".join(client_info.get('environments', []))
+                status = "Connected" if client_info.get('connected', False) else "Disconnected"
 
-            # Calculate uptime
-            connect_time = client_info.get('connect_time')
-            if connect_time:
-                uptime = self.format_uptime(time.time() - connect_time)
-            else:
-                uptime = "N/A"
+                # Calculate uptime
+                connect_time = client_info.get('connect_time')
+                if connect_time:
+                    uptime = self.format_uptime(time.time() - connect_time)
+                else:
+                    uptime = "N/A"
 
-            self.clients_tree.insert("", tk.END, values=(
-                username, ip, port, packet_count, top_protocol,
-                environments, status, uptime
-            ))
+                self.clients_tree.insert("", tk.END, values=(
+                    username, ip, port, packet_count, top_protocol,
+                    environments, status, uptime
+                ))
+                displayed_count += 1
+
+            except Exception as e:
+                self.add_debug_message(f"Error displaying client {client_id}: {e}")
+
+        self.client_status_var.set(f"Displaying {displayed_count} clients")
+        self.add_debug_message(f"Successfully displayed {displayed_count} clients")
 
     def update_protocol_display(self):
         """Update protocol distribution display"""
@@ -303,57 +390,18 @@ class AdminDashboard(ttk.Frame):
                                       key=lambda x: x[1], reverse=True):
             if count > 0:
                 percentage = (count / total_packets * 100) if total_packets > 0 else 0
-                rate = count / max(1, time.time() - self.last_update)
-
                 self.protocol_tree.insert("", tk.END, values=(
-                    protocol, count, f"{percentage:.1f}%", f"{rate:.1f}"
+                    protocol, count, f"{percentage:.1f}%"
                 ))
-
-    def update_environment_display(self, env_data):
-        """Update environment statistics display"""
-        # Clear existing items
-        for item in self.env_tree.get_children():
-            self.env_tree.delete(item)
-
-        # Add environment stats
-        for env_name, env_info in env_data.items():
-            client_count = len(env_info.get('clients', {}))
-            packet_count = env_info.get('packet_count', 0)
-
-            # Find top protocol
-            protocols = env_info.get('protocol_counts', {})
-            if protocols:
-                top_protocol = max(protocols.items(), key=lambda x: x[1])[0]
-            else:
-                top_protocol = "N/A"
-
-            # Activity level
-            if packet_count > 1000:
-                activity = "High"
-            elif packet_count > 100:
-                activity = "Medium"
-            elif packet_count > 0:
-                activity = "Low"
-            else:
-                activity = "Idle"
-
-            self.env_tree.insert("", tk.END, values=(
-                env_name, client_count, packet_count, top_protocol, activity
-            ))
 
     def update_summary_stats(self):
         """Update summary statistics"""
-        total_clients = len([c for c in self.client_data.values() if c.get('connected', False)])
+        total_clients = len([c for c in self.client_data.values() if c.get('connected', False)]) if isinstance(
+            self.client_data, dict) else 0
         total_packets = sum(self.global_protocol_counts.values())
 
         self.total_clients_var.set(str(total_clients))
         self.total_packets_var.set(str(total_packets))
-
-        # Calculate packets per second (rough estimate)
-        if hasattr(self, '_last_packet_count'):
-            pps = (total_packets - self._last_packet_count) / max(1, time.time() - self.last_update)
-            self.pps_var.set(f"{pps:.1f}")
-        self._last_packet_count = total_packets
 
     def format_uptime(self, seconds):
         """Format uptime in human-readable format"""
@@ -402,34 +450,6 @@ class AdminDashboard(ttk.Frame):
 
         text.config(state=tk.DISABLED)
 
-    def disconnect_client(self):
-        """Disconnect selected client (admin action)"""
-        selected = self.clients_tree.selection()
-        if not selected:
-            return
-
-        item = self.clients_tree.item(selected[0])
-        username = item['values'][0]
-
-        # Confirm action
-        from tkinter import messagebox
-        if messagebox.askyesno("Disconnect Client",
-                               f"Are you sure you want to disconnect {username}?"):
-            if self.backend and hasattr(self.backend, 'admin_disconnect_client'):
-                self.backend.admin_disconnect_client(username)
-
-    def copy_client_info(self):
-        """Copy selected client information to clipboard"""
-        selected = self.clients_tree.selection()
-        if not selected:
-            return
-
-        item = self.clients_tree.item(selected[0])
-        info = f"Username: {item['values'][0]}, IP: {item['values'][1]}, Packets: {item['values'][3]}"
-
-        self.clipboard_clear()
-        self.clipboard_append(info)
-
     def export_stats(self):
         """Export statistics to file"""
         from tkinter import filedialog
@@ -445,7 +465,8 @@ class AdminDashboard(ttk.Frame):
                 'clients': self.client_data,
                 'global_protocols': self.global_protocol_counts,
                 'total_clients': self.total_clients_var.get(),
-                'total_packets': self.total_packets_var.get()
+                'total_packets': self.total_packets_var.get(),
+                'debug_messages': self.debug_messages
             }
 
             with open(filename, 'w') as f:
@@ -453,11 +474,3 @@ class AdminDashboard(ttk.Frame):
 
             from tkinter import messagebox
             messagebox.showinfo("Export Complete", f"Stats exported to {filename}")
-
-    def clear_stats(self):
-        """Clear all statistics (admin action)"""
-        from tkinter import messagebox
-        if messagebox.askyesno("Clear Stats",
-                               "Are you sure you want to clear all statistics?"):
-            if self.backend and hasattr(self.backend, 'admin_clear_stats'):
-                self.backend.admin_clear_stats()
