@@ -196,33 +196,6 @@ class SimpleAdminDashboard:
 
         help_text = tk.Text(help_frame, wrap=tk.WORD, height=10)
         help_text.pack(fill=tk.BOTH, expand=True)
-
-        help_content = """
-TROUBLESHOOTING ADMIN DASHBOARD:
-
-1. MISSING MODULES:
-   - Make sure admin_dashboard.py is in the same directory
-   - Check that capture_backend.py exists
-   - Verify socket_client.py is available
-
-2. FILE LOCATIONS CHECKED:
-   - Current directory: """ + os.path.dirname(os.path.abspath(__file__)) + """
-   - Client subdirectory
-   - Parent directories
-
-3. IMPORT PATHS TRIED:
-""" + "\n".join([f"   - {path}" for path in sys.path[:5]]) + """
-
-4. TO FIX:
-   - Copy all required .py files to the same directory as this script
-   - Or run from the correct directory where all files exist
-   - Or use: python admin_client.py --dashboard-only
-
-5. ALTERNATIVE COMMANDS:
-   python admin_client.py --config user_config.json --dashboard-only
-   python admin_client.py --force-admin
-        """
-
         help_text.insert(tk.END, help_content)
         help_text.config(state=tk.DISABLED)
 
