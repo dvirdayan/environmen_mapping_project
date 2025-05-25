@@ -5,10 +5,10 @@ from tkinter import ttk, messagebox
 class AddEnvironmentDialog:
     """Dialog for adding a new environment."""
 
-    def __init__(self, parent, user_id, db, on_success=None):
+    def __init__(self, parent, user_id, db_client, on_success=None):
         self.parent = parent
         self.user_id = user_id
-        self.db = db
+        self.db_client = db_client
         self.on_success = on_success
 
         # Create the dialog window
@@ -73,7 +73,8 @@ class AddEnvironmentDialog:
             messagebox.showerror("Error", "Please enter both environment name and password.")
             return
 
-        if self.db.add_environment(self.user_id, env_name, env_password):
+        # Use database client to add environment
+        if self.db_client.add_environment(env_name, env_password):
             messagebox.showinfo("Success", f"Environment '{env_name}' created successfully!")
             self.dialog.destroy()
 

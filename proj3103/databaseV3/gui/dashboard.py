@@ -15,12 +15,12 @@ from proj3103.databaseV3.gui.environment_frames import (
 class DashboardFrame:
     """Main dashboard frame after login."""
 
-    def __init__(self, parent, username, is_admin, logout_callback, user_id, db, start_client_callback=None):
+    def __init__(self, parent, username, is_admin, logout_callback, user_id, db_client, start_client_callback=None):
         self.parent = parent
         self.username = username
         self.is_admin = is_admin
         self.user_id = user_id
-        self.db = db
+        self.db_client = db_client
         self.start_client_callback = start_client_callback
 
         # Create the main dashboard frame
@@ -68,27 +68,41 @@ class DashboardFrame:
 
     def no_client_callback(self):
         """Fallback when no client callback is provided."""
-        from tkinter import messagebox
         messagebox.showwarning("No Client", "Client functionality is not available.")
 
     def start_admin_dashboard(self):
-        """Simplified version that just starts the dashboard without excessive config warnings"""
+        """Start admin dashboard with config from database_client."""
         try:
-            # Quick config save attempt (without warnings if it fails)
+            # Check if client is authenticated
+            if not self.db_client.is_authenticated():
+                messagebox.showerror("Error", "Not authenticated. Please log in again.")
+                return
+
+            # Save config using database_client data
             try:
                 config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "client")
                 os.makedirs(config_dir, exist_ok=True)
 
+                # Get environments from database client
+                environments = self.db_client.get_environments()
+                if environments is None:
+                    environments = []
+
                 config_data = {
-                    "username": self.username,
-                    "user_id": self.user_id,
-                    "environments": getattr(self, 'db', None) and self.db.get_user_environments(self.user_id) or []
+                    "username": self.db_client.username,
+                    "user_id": self.db_client.user_id,
+                    "is_admin": self.db_client.is_admin,
+                    "server_host": self.db_client.host,
+                    "server_port": self.db_client.port,
+                    "session_token": self.db_client.session_token,
+                    "environments": environments
                 }
 
                 with open(os.path.join(config_dir, "user_config.json"), "w") as f:
                     json.dump(config_data, f, indent=2)
-            except:
-                pass  # Silently ignore config save errors
+            except Exception as e:
+                # Log the error but continue - config save is optional
+                print(f"Warning: Could not save config: {e}")
 
             # Find and start admin dashboard
             current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -115,30 +129,52 @@ class DashboardFrame:
             # Start the dashboard
             subprocess.Popen([sys.executable, dashboard_path])
 
-            # Simple success message
-            messagebox.showinfo("Success", f"Admin Dashboard started for {self.username}")
+            # Success message
+            messagebox.showinfo("Success", f"Admin Dashboard started for {self.db_client.username}")
 
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start admin dashboard: {e}")
 
-
     def create_notebook(self):
-        """Create the tabbed interface."""
+        """Create the tabbed interface using database_client."""
         notebook = ttk.Notebook(self.frame)
         notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # My Environments tab (for all users)
+        # My Environments tab (for all users) - pass refresh callback
         my_environments_frame = ttk.Frame(notebook)
         notebook.add(my_environments_frame, text="My Environments")
-        MyEnvironmentsTab(my_environments_frame, self.user_id, self.db)
+        self.my_environments_tab = MyEnvironmentsTab(my_environments_frame, self.db_client.user_id, self.db_client)
 
         # Create Admin tab if user is admin
-        if self.is_admin:
+        if self.db_client.is_admin:
             admin_frame = ttk.Frame(notebook)
             notebook.add(admin_frame, text="Admin Console")
-            AdminConsoleTab(admin_frame, self.user_id, self.db)
+            self.admin_console_tab = AdminConsoleTab(admin_frame, self.db_client.user_id, self.db_client)
 
-        # Join Environment tab (for all users)
+        # Join Environment tab (for all users) - pass refresh callback
         join_frame = ttk.Frame(notebook)
         notebook.add(join_frame, text="Join Environment")
-        JoinEnvironmentTab(join_frame, self.user_id, self.db)
+        self.join_environment_tab = JoinEnvironmentTab(
+            join_frame,
+            self.db_client.user_id,
+            self.db_client,
+            on_join_success=self.refresh_all_tabs
+        )
+
+    def refresh_all_tabs(self):
+        """Refresh all tabs after environment changes using database_client."""
+        try:
+            # Refresh My Environments tab
+            if hasattr(self, 'my_environments_tab'):
+                self.my_environments_tab.populate_user_environments()
+
+            # Refresh Admin Console tab if it exists
+            if hasattr(self, 'admin_console_tab'):
+                self.admin_console_tab.populate_admin_environments()
+
+            # Refresh Join Environment tab
+            if hasattr(self, 'join_environment_tab'):
+                self.join_environment_tab.populate_available_environments()
+
+        except Exception as e:
+            print(f"Error refreshing tabs: {e}")

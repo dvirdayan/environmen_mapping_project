@@ -3,28 +3,23 @@ from tkinter import ttk, messagebox
 import json
 import os
 
-# Import the database class
-from proj3103.databaseV3.cdatabase import CredentialDatabase
+# Import the database client instead of direct database access
+from proj3103.databaseV3.database_client import DatabaseClient
 
-# Import GUI components
+# Import GUI components (assuming these exist from your original code)
 from proj3103.databaseV3.gui.auth_frames import AuthFrame, LoginFrame, RegisterFrame
 from proj3103.databaseV3.gui.dashboard import DashboardFrame
 
 
 class CredentialManagerGUI:
-    def __init__(self, root):
+    def __init__(self, root, server_host='localhost', server_port=9008):
         self.root = root
         self.root.title("Credential Manager")
         self.root.geometry("800x500")
         self.root.resizable(True, True)
 
-        # Initialize database
-        self.db = CredentialDatabase()
-
-        # Current user state
-        self.current_user_id = None
-        self.current_username = None
-        self.is_admin = False
+        # Initialize database client instead of direct database connection
+        self.db_client = DatabaseClient(server_host, server_port)
 
         # Set up the main frame
         self.main_frame = ttk.Frame(self.root, padding="10")
@@ -39,7 +34,8 @@ class CredentialManagerGUI:
     def on_close(self):
         """Handle closing the application."""
         if messagebox.askokcancel("Quit", "Are you sure you want to quit?"):
-            self.db.close()
+            if self.db_client.is_authenticated():
+                self.db_client.logout()
             self.root.destroy()
 
     def clear_frame(self, frame):
@@ -70,70 +66,86 @@ class CredentialManagerGUI:
             messagebox.showerror("Error", "Please enter both username and password.")
             return
 
-        result = self.db.authenticate_user(username, password)
-        if result:
-            user_id, is_admin = result
-            self.current_user_id = user_id
-            self.current_username = username
-            self.is_admin = is_admin
+        # Attempt authentication through the client
+        if self.db_client.authenticate(username, password):
             self.root.unbind('<Return>')  # Unbind the Enter key
             self.show_main_dashboard()
 
             # Always save config file on login
-            config_path = self.save_user_config(username)
+            config_path = self.save_user_config()
             messagebox.showinfo("Login Successful",
-                                f"Welcome {username}! Your configuration has been saved for client use.")
+                                f"Welcome {self.db_client.username}! Your configuration has been saved for client use.")
         else:
-            messagebox.showerror("Login Failed", "Invalid username or password.")
+            messagebox.showerror("Login Failed", "Invalid username or password, or server unavailable.")
 
-    def save_user_config(self, username):
+    def save_user_config(self):
         """Save the current username and environment info to a config file for the client."""
-        # Path to save config file - create directory structure if needed
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        # Go up 2 levels from gui directory to reach database directory
-        parent_dir = os.path.dirname(os.path.dirname(base_dir))
-        # Then down to client directory
-        config_dir = os.path.join(parent_dir, "client")
-        os.makedirs(config_dir, exist_ok=True)
+        try:
+            # Path to save config file - create directory structure if needed
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # Go up 2 levels from gui directory to reach database directory
+            parent_dir = os.path.dirname(os.path.dirname(base_dir))
+            # Then down to client directory
+            config_dir = os.path.join(parent_dir, "client")
+            os.makedirs(config_dir, exist_ok=True)
 
-        config_path = os.path.join(config_dir, "user_config.json")
+            config_path = os.path.join(config_dir, "user_config.json")
 
-        # Get user environments from database
-        environments = self.db.get_user_environments(self.current_user_id)
+            # Get user environments from server through the client
+            environments = self.db_client.get_environments()
+            if environments is None:
+                environments = []
 
-        # Create config with username and available environments
-        config = {
-            "username": username,
-            "user_id": self.current_user_id,
-            "environments": environments
-        }
+            # Create config with all data from db_client
+            config = {
+                "username": self.db_client.username,
+                "user_id": self.db_client.user_id,
+                "is_admin": self.db_client.is_admin,
+                "server_host": self.db_client.host,
+                "server_port": self.db_client.port,
+                "session_token": self.db_client.session_token,
+                "environments": environments
+            }
 
-        # Write to config file
-        with open(config_path, "w") as f:
-            json.dump(config, f)
+            # Write to config file
+            with open(config_path, "w") as f:
+                json.dump(config, f, indent=2)
 
-        print(f"Config saved to: {config_path}")
-        print(f"Config contents: {config}")
+            print(f"Config saved to: {config_path}")
+            print(f"Config contents: {config}")
 
-        return config_path
+            return config_path
+
+        except Exception as e:
+            print(f"Error saving config: {e}")
+            return None
 
     def start_client(self):
         """Start the packet capture client in a separate process with username and environment."""
         try:
             # Save the latest config with username and environments
-            config_path = self.save_user_config(self.current_username)
+            config_path = self.save_user_config()
+            if not config_path:
+                messagebox.showerror("Error", "Failed to save configuration file.")
+                return
 
             import subprocess
+            import sys
+
             client_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client",
                                        "client_main.py")
 
-            # Start client process with config path as argument
-            subprocess.Popen(["python", client_path, "--config", config_path])
+            if os.path.exists(client_path):
+                # Start client process with config path as argument
+                subprocess.Popen([sys.executable, client_path, "--config", config_path])
 
-            messagebox.showinfo(
-                "Client Started",
-                f"The packet capture client has been started for user '{self.current_username}'."
-            )
+                messagebox.showinfo(
+                    "Client Started",
+                    f"The packet capture client has been started for user '{self.db_client.username}'."
+                )
+            else:
+                messagebox.showerror("Error", f"Client script not found at: {client_path}")
+
         except Exception as e:
             messagebox.showerror("Error", f"Failed to start client: {str(e)}")
 
@@ -147,29 +159,85 @@ class CredentialManagerGUI:
             messagebox.showerror("Error", "Passwords do not match.")
             return
 
-        if self.db.add_user(username, password, is_admin):
+        # Use database client to register user
+        if self.db_client.register_user(username, password, is_admin):
             messagebox.showinfo("Success",
                                 f"User '{username}' registered successfully{' as Admin' if is_admin else ''}!")
             self.show_login_form()
         else:
-            messagebox.showerror("Error", f"Username '{username}' already exists. Please choose another username.")
+            messagebox.showerror("Error",
+                                 f"Username '{username}' already exists or server error occurred. Please choose another username.")
 
     def logout_user(self):
         """Log out the current user."""
-        self.current_user_id = None
-        self.current_username = None
-        self.is_admin = False
-        self.show_auth_frame()
+        if self.db_client.logout():
+            self.show_auth_frame()
 
     def show_main_dashboard(self):
         """Display the main dashboard after login."""
         self.clear_frame(self.main_frame)
+
+        # Get all current user information from the database client
+        user_info = self.db_client.get_user_info()
+
         DashboardFrame(
             self.main_frame,
-            self.current_username,
-            self.is_admin,
+            user_info['username'],
+            user_info['is_admin'],
             self.logout_user,
-            self.current_user_id,
-            self.db,
-            self.start_client  # Pass the client start function
+            user_info['user_id'],
+            self.db_client,
+            self.start_client
         )
+
+    # Helper methods that delegate to database client
+    def get_current_user_id(self):
+        """Get current user ID from database client."""
+        return self.db_client.user_id if self.db_client.is_authenticated() else None
+
+    def get_current_username(self):
+        """Get current username from database client."""
+        return self.db_client.username if self.db_client.is_authenticated() else None
+
+    def get_is_admin(self):
+        """Get admin status from database client."""
+        return self.db_client.is_admin if self.db_client.is_authenticated() else False
+
+    def get_user_environments(self):
+        """Get user environments from database client."""
+        return self.db_client.get_environments()
+
+    def add_environment(self, env_name, env_password):
+        """Add environment through database client."""
+        return self.db_client.add_environment(env_name, env_password)
+
+    def join_environment(self, env_name, env_password):
+        """Join environment through database client."""
+        return self.db_client.join_environment(env_name, env_password)
+
+    def store_packet_data(self, env_name, packet_data):
+        """Store packet data through database client."""
+        return self.db_client.store_packet_data(env_name, packet_data)
+
+    def get_packet_data(self, env_name, limit=100):
+        """Get packet data through database client."""
+        return self.db_client.get_packet_data(env_name, limit)
+
+
+def main():
+    """Main entry point for the Credential Manager application."""
+    root = tk.Tk()
+
+    # Optional: Set icon if available
+    try:
+        root.iconbitmap('tree.ico')
+    except:
+        pass  # Ignore if icon file doesn't exist
+
+    # You can customize server connection here
+    app = CredentialManagerGUI(root, server_host='localhost', server_port=9008)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

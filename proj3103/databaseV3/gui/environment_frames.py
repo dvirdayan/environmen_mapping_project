@@ -7,10 +7,10 @@ from proj3103.databaseV3.gui.dialogs import AddEnvironmentDialog
 class MyEnvironmentsTab:
     """Tab for managing user's environments."""
 
-    def __init__(self, parent, user_id, db):
+    def __init__(self, parent, user_id, db_client):
         self.parent = parent
         self.user_id = user_id
-        self.db = db
+        self.db_client = db_client
 
         # Create controls
         controls_frame = ttk.Frame(parent)
@@ -27,7 +27,7 @@ class MyEnvironmentsTab:
         refresh_btn = ttk.Button(
             controls_frame,
             text="Refresh",
-            command=lambda: self.populate_user_environments()
+            command=self.populate_user_environments
         )
         refresh_btn.pack(side=tk.LEFT, padx=5)
 
@@ -61,20 +61,31 @@ class MyEnvironmentsTab:
         return env_tree
 
     def populate_user_environments(self):
-        """Populate the treeview with user's environments."""
+        """Populate the treeview with user's environments using database_client."""
         # Clear current items
         for item in self.env_tree.get_children():
             self.env_tree.delete(item)
 
-        # Get environments for the current user
-        environments = self.db.get_user_environments(self.user_id)
+        # Check if client is authenticated
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
+            return
+
+        # Get environments for the current user using database client
+        environments = self.db_client.get_environments()
+
+        if environments is None:
+            messagebox.showerror("Error", "Failed to retrieve environments from server.")
+            return
 
         # Add environments to the treeview
         for env in environments:
+            # Database client returns environments with is_admin field
+            role = "Admin" if env.get("is_admin", False) else "Member"
             self.env_tree.insert("", tk.END, values=(
                 env["env_name"],
                 env["env_password"],
-                "Admin" if env["is_admin"] else "Member"
+                role
             ))
 
     def create_context_menu(self):
@@ -103,6 +114,7 @@ class MyEnvironmentsTab:
         """Copy the password of the selected environment to clipboard."""
         selected_item = self.env_tree.selection()
         if not selected_item:
+            messagebox.showwarning("Warning", "Please select an environment first.")
             return
 
         item = self.env_tree.item(selected_item[0])
@@ -116,6 +128,7 @@ class MyEnvironmentsTab:
         """Leave the selected environment."""
         selected_item = self.env_tree.selection()
         if not selected_item:
+            messagebox.showwarning("Warning", "Please select an environment first.")
             return
 
         item = self.env_tree.item(selected_item[0])
@@ -127,21 +140,19 @@ class MyEnvironmentsTab:
             messagebox.showerror("Error", "You cannot leave an environment you created. You must delete it instead.")
             return
 
-        if messagebox.askyesno("Leave Environment", f"Are you sure you want to leave '{env_name}'?"):
-            if self.db.leave_environment(self.user_id, env_name):
-                messagebox.showinfo("Success", f"You have left '{env_name}'.")
-                self.populate_user_environments()
-            else:
-                messagebox.showerror("Error", f"Failed to leave '{env_name}'.")
+        # Note: Leave environment functionality would need to be implemented in database client
+        # For now, show a message that this feature is not available
+        messagebox.showwarning("Feature Not Available",
+                               "Leave environment functionality requires server-side implementation.")
 
 
 class AdminConsoleTab:
     """Tab for admin users to manage environments."""
 
-    def __init__(self, parent, user_id, db):
+    def __init__(self, parent, user_id, db_client):
         self.parent = parent
         self.user_id = user_id
-        self.db = db
+        self.db_client = db_client
 
         # Create buttons frame
         buttons_frame = ttk.Frame(parent)
@@ -195,20 +206,36 @@ class AdminConsoleTab:
         return env_tree
 
     def show_add_environment_dialog(self):
-        """Show dialog to add a new environment."""
-        dialog = AddEnvironmentDialog(self.parent, self.user_id, self.db, self.populate_admin_environments)
+        """Show dialog to add a new environment using database_client."""
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
+            return
+
+        dialog = AddEnvironmentDialog(self.parent, self.user_id, self.db_client, self.populate_admin_environments)
 
     def populate_admin_environments(self):
-        """Populate the treeview with admin's environments."""
+        """Populate the treeview with admin's environments using database_client."""
         # Clear current items
         for item in self.env_tree.get_children():
             self.env_tree.delete(item)
 
-        # Get environments created by this admin
-        environments = self.db.get_admin_environments(self.user_id)
+        # Check if client is authenticated
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
+            return
+
+        # Get environments from database client
+        environments = self.db_client.get_environments()
+
+        if environments is None:
+            messagebox.showerror("Error", "Failed to retrieve environments from server.")
+            return
+
+        # Filter to show only environments where user is admin
+        admin_environments = [env for env in environments if env.get("is_admin", False)]
 
         # Add environments to the treeview
-        for env in environments:
+        for env in admin_environments:
             self.env_tree.insert("", tk.END, values=(env["env_name"], env["env_password"]))
 
     def create_context_menu(self):
@@ -237,6 +264,11 @@ class AdminConsoleTab:
         """Edit the password of the selected environment."""
         selected_item = self.env_tree.selection()
         if not selected_item:
+            messagebox.showwarning("Warning", "Please select an environment first.")
+            return
+
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
             return
 
         item = self.env_tree.item(selected_item[0])
@@ -248,16 +280,19 @@ class AdminConsoleTab:
                                               show='*')
 
         if new_password:
-            if self.db.update_environment(self.user_id, env_name, new_password):
-                messagebox.showinfo("Success", f"Password for '{env_name}' updated successfully.")
-                self.populate_admin_environments()
-            else:
-                messagebox.showerror("Error", f"Failed to update password for '{env_name}'.")
+            # Note: Update environment functionality would need to be implemented in database client
+            messagebox.showwarning("Feature Not Available",
+                                   "Edit environment password functionality requires server-side implementation.")
 
     def delete_selected_environment(self):
         """Delete the selected environment."""
         selected_item = self.env_tree.selection()
         if not selected_item:
+            messagebox.showwarning("Warning", "Please select an environment first.")
+            return
+
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
             return
 
         item = self.env_tree.item(selected_item[0])
@@ -265,20 +300,18 @@ class AdminConsoleTab:
 
         if messagebox.askyesno("Delete Environment",
                                f"Are you sure you want to delete '{env_name}'? This will remove access for all users."):
-            if self.db.delete_environment(self.user_id, env_name):
-                messagebox.showinfo("Success", f"Environment '{env_name}' deleted successfully.")
-                self.populate_admin_environments()
-            else:
-                messagebox.showerror("Error", f"Failed to delete environment '{env_name}'.")
+            # Note: Delete environment functionality would need to be implemented in database client
+            messagebox.showwarning("Feature Not Available",
+                                   "Delete environment functionality requires server-side implementation.")
 
 
 class JoinEnvironmentTab:
     """Tab for joining existing environments."""
 
-    def __init__(self, parent, user_id, db, on_join_success=None):
+    def __init__(self, parent, user_id, db_client, on_join_success=None):
         self.parent = parent
         self.user_id = user_id
-        self.db = db
+        self.db_client = db_client
         self.on_join_success = on_join_success
 
         # Create join frame
@@ -361,13 +394,22 @@ class JoinEnvironmentTab:
         return tree
 
     def populate_available_environments(self):
-        """Populate the treeview with available environments."""
+        """Populate the treeview with available environments using database_client."""
         # Clear current items
         for item in self.available_tree.get_children():
             self.available_tree.delete(item)
 
-        # Get all available environments
-        environments = self.db.get_available_environments()
+        # Check if client is authenticated
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
+            return
+
+        # Get all available environments from database client
+        environments = self.db_client.get_environments()
+
+        if environments is None:
+            messagebox.showerror("Error", "Failed to retrieve environments from server.")
+            return
 
         # Add environments to the treeview
         for env in environments:
@@ -383,16 +425,29 @@ class JoinEnvironmentTab:
             self.name_entry.insert(0, env_name)
 
     def join_environment(self):
-        """Join an existing environment."""
-        env_name = self.name_entry.get()
-        env_password = self.pass_entry.get()
+        """Join an existing environment using database_client."""
+        env_name = self.name_entry.get().strip()
+        env_password = self.pass_entry.get().strip()
 
         if not env_name or not env_password:
             messagebox.showerror("Error", "Please enter both environment name and password.")
             return
 
-        if self.db.join_environment(self.user_id, env_name, env_password):
+        # Check if client is authenticated
+        if not self.db_client.is_authenticated():
+            messagebox.showerror("Error", "Not authenticated. Please log in again.")
+            return
+
+        # Use database client to join environment
+        if self.db_client.join_environment(env_name, env_password):
             messagebox.showinfo("Success", f"You have joined environment '{env_name}'!")
+
+            # Clear the form
+            self.name_entry.delete(0, tk.END)
+            self.pass_entry.delete(0, tk.END)
+
+            # Refresh available environments
+            self.populate_available_environments()
 
             # Call the callback if provided
             if self.on_join_success:
