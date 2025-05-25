@@ -10,7 +10,7 @@ from client_front import PacketCaptureClientUI
 from pie_chart import integrate_pie_chart_to_ui
 from capture_backend import OptimizedPacketCaptureBackend
 from environment_selector import enhance_client_ui_with_environment_selector
-from admin_dashboard import AdminDashboard  # Import admin dashboard
+from proj3103.databaseV3.admin.admin_dashboard import AdminDashboard  # Import admin dashboard
 # Add the current directory to the path to ensure modules can be imported
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 

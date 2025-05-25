@@ -116,8 +116,8 @@ class DashboardFrame:
                 # Grandparent
                 os.path.join(current_dir, "..", "standalone_admin_dashboard.py"),  # Relative parent
                 os.path.join(current_dir, "..", "..", "standalone_admin_dashboard.py"),  # Relative grandparent
-                os.path.join(current_dir, "..", "client", "standalone_admin_dashboard.py"),  # Client dir
-                os.path.join(os.path.dirname(current_dir), "client", "standalone_admin_dashboard.py"),  # Parent/client
+                os.path.join(current_dir, "..", "admin", "standalone_admin_dashboard.py"),  # admin dir
+                os.path.join(os.path.dirname(current_dir), "admin", "standalone_admin_dashboard.py"),  # Parent/client
             ]
 
             print(f"[DEBUG] Searching for admin dashboard in paths:")
