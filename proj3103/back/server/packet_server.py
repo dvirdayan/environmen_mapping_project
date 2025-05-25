@@ -828,8 +828,8 @@ class PacketServer:
             possible_paths = [
                 db_file,  # Current directory
                 os.path.join(current_dir, db_file),  # Same directory as script
-                os.path.join(current_dir, "..", "databaseV3", db_file),  # ../databaseV3/ directory
-                os.path.join(current_dir, "..", db_file),  # Parent directory
+                os.path.join(current_dir, "../..", "databaseV3", db_file),  # ../databaseV3/ directory
+                os.path.join(current_dir, "../..", db_file),  # Parent directory
                 os.path.abspath(db_file)  # Absolute path provided
             ]
 

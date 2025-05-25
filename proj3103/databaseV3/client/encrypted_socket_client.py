@@ -4,7 +4,6 @@ import queue
 import socket
 import json
 import select
-import traceback
 import uuid
 from datetime import datetime
 
@@ -13,7 +12,7 @@ from proj3103.databaseV3.client.socket_client import StableSocketClient
 
 # Import encryption module
 try:
-    from proj3103.back.crypto_handler import CryptoHandler, SecureMessageHandler, CRYPTO_AVAILABLE
+    from proj3103.back.server.crypto_handler import CryptoHandler, SecureMessageHandler, CRYPTO_AVAILABLE
 except ImportError:
     print("Error: crypto_handler.py not found")
     CRYPTO_AVAILABLE = False

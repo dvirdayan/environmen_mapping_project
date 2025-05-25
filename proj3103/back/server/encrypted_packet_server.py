@@ -1,5 +1,4 @@
 import socket
-import threading
 import json
 import time
 import select
@@ -8,7 +7,7 @@ import os
 import sys
 
 # Import the original packet server
-from proj3103.back.packet_server import PacketServer
+from proj3103.back.server.packet_server import PacketServer
 
 # Import encryption module
 try:
@@ -42,7 +41,7 @@ class EncryptedPacketServer(PacketServer):
 
     def setup_encryption(self):
         """Setup RSA keys for the server"""
-        key_file = "server_private_key.pem"
+        key_file = "../server_private_key.pem"
 
         # Try to load existing key
         if os.path.exists(key_file):
