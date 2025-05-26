@@ -7,7 +7,7 @@ This script starts both the server backend and the UI frontend.
 import sys
 import os
 
-# Try to import encrypted version, fall back to regular version
+# Try to import encrypted version, fall server_side to regular version
 try:
     from encrypted_packet_server import EncryptedPacketServer as PacketServer
     from crypto_handler import CRYPTO_AVAILABLE

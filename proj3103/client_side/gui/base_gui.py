@@ -9,11 +9,11 @@ import threading
 import time
 
 # Import the database client instead of direct database access
-from proj3103.databaseV3.database_client import DatabaseClient
+from proj3103.client_side.database_client import DatabaseClient
 
 # Import GUI components (assuming these exist from your original code)
-from proj3103.databaseV3.gui.auth_frames import AuthFrame, LoginFrame, RegisterFrame
-from proj3103.databaseV3.gui.dashboard import DashboardFrame
+from proj3103.client_side.gui.auth_frames import AuthFrame, LoginFrame, RegisterFrame
+from proj3103.client_side.gui.dashboard import DashboardFrame
 
 
 class CredentialManagerGUI:

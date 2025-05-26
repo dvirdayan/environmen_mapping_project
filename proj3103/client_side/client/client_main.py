@@ -13,7 +13,7 @@ try:
     from pie_chart import integrate_pie_chart_to_ui
     from capture_backend import OptimizedPacketCaptureBackend
     from environment_selector import enhance_client_ui_with_environment_selector
-    from proj3103.databaseV3.admin.admin_dashboard import AdminDashboard
+    from proj3103.client_side.admin.admin_dashboard import AdminDashboard
 except ImportError as e:
     print(f"WARNING: Some imports failed: {e}")
     print("Some features may not be available")

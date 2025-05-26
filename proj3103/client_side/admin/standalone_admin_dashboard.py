@@ -24,12 +24,12 @@ def setup_imports():
         current_dir,  # Same directory
         os.path.join(current_dir, ".."),  # Parent directory
         os.path.join(current_dir, "../client"),  # client subdirectory
-        os.path.join(current_dir, "../../client"),  # ../client from databaseV3
+        os.path.join(current_dir, "../../client"),  # ../client from client_side
         os.path.join(current_dir, "../../../client"),  # ../client from deeper nesting
         os.path.dirname(current_dir),  # Parent directory
         os.path.join(os.path.dirname(current_dir), "client"),  # parent/client
-        os.path.join(current_dir, "../databaseV3"),  # For database_client
-        os.path.join(current_dir, "../../databaseV3"),  # For database_client
+        os.path.join(current_dir, "../client_side"),  # For database_client
+        os.path.join(current_dir, ".."),  # For database_client
     ]
 
     print(f"[DEBUG] Looking for modules in:")
@@ -121,11 +121,11 @@ except ImportError as e:
     print(f"  ✗ Failed to import DatabaseClient: {e}")
     # Try alternative import path
     try:
-        from proj3103.databaseV3.database_client import DatabaseClient
+        from proj3103.client_side.database_client import DatabaseClient
 
-        print("  ✓ Successfully imported DatabaseClient from proj3103.databaseV3")
+        print("  ✓ Successfully imported DatabaseClient from proj3103.client_side")
     except ImportError as e2:
-        print(f"  ✗ Failed to import DatabaseClient from proj3103.databaseV3: {e2}")
+        print(f"  ✗ Failed to import DatabaseClient from proj3103.client_side: {e2}")
 
 print()
 

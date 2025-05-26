@@ -8,11 +8,11 @@ import uuid
 from datetime import datetime
 
 # Import the original socket client
-from proj3103.databaseV3.client.socket_client import StableSocketClient
+from proj3103.client_side.client.socket_client import StableSocketClient
 
 # Import encryption module
 try:
-    from proj3103.back.server.crypto_handler import CryptoHandler, SecureMessageHandler, CRYPTO_AVAILABLE
+    from proj3103.server_side.server.crypto_handler import CryptoHandler, SecureMessageHandler, CRYPTO_AVAILABLE
 except ImportError:
     print("Error: crypto_handler.py not found")
     CRYPTO_AVAILABLE = False

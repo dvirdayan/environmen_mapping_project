@@ -1,7 +1,7 @@
 import time
 import tkinter as tk
 from tkinter import ttk, messagebox
-from proj3103.databaseV3.gui.input_validation import validate_username, validate_password, get_validation_rules
+from proj3103.client_side.gui.input_validation import validate_username, validate_password, get_validation_rules
 import pygame
 
 

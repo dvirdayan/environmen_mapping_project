@@ -5,7 +5,7 @@ import sys
 import json
 import subprocess
 
-from proj3103.databaseV3.gui.environment_frames import (
+from proj3103.client_side.gui.environment_frames import (
     MyEnvironmentsTab,
     AdminConsoleTab,
     JoinEnvironmentTab

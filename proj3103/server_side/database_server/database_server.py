@@ -633,7 +633,7 @@ class SecureDatabaseServer:
                     # Process request
                     response = self.handle_request(request_data, client_ip)
 
-                    # Send response back to client
+                    # Send response server_side to client
                     response_json = json.dumps(response)
                     client_socket.send(response_json.encode('utf-8'))
 

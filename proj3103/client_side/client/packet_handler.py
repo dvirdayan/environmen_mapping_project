@@ -17,7 +17,6 @@ class RealPacketHandler:
     def start(self):
         """Start packet capture - real or test based on configuration"""
         self.running = True
-
         if self.use_real_capture:
             self.thread = threading.Thread(target=self._capture_real_packets)
         else:
@@ -73,11 +72,11 @@ class RealPacketHandler:
                   stop_filter=lambda x: not self.running)
 
         except ImportError:
-            print("Scapy not available, falling back to test packets")
+            print("Scapy not available, falling server_side to test packets")
             self._generate_test_packets()
         except Exception as e:
             print(f"Error in real packet capture: {e}")
-            print("Falling back to test packets")
+            print("Falling server_side to test packets")
             self._generate_test_packets()
 
     def _scapy_to_dict(self, packet):

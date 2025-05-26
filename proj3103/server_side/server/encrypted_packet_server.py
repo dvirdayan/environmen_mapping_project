@@ -7,7 +7,7 @@ import os
 import sys
 
 # Import the original packet server
-from proj3103.back.server.packet_server import PacketServer
+from proj3103.server_side.server.packet_server import PacketServer
 
 # Import encryption module
 try:
