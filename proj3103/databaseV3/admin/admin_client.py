@@ -13,7 +13,7 @@ import argparse
 # Add the current directory to the path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from proj3103.databaseV3.client.client_front import PacketCaptureClientUI
+from proj3103.databaseV3.client.client_dashboard import PacketCaptureClientUI
 from proj3103.databaseV3.client.capture_backend import OptimizedPacketCaptureBackend
 from admin_dashboard import AdminDashboard
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 # Import the UI and integration components
 try:
-    from client_front import PacketCaptureClientUI
+    from client_dashboard import PacketCaptureClientUI
     from pie_chart import integrate_pie_chart_to_ui
     from capture_backend import OptimizedPacketCaptureBackend
     from environment_selector import enhance_client_ui_with_environment_selector
