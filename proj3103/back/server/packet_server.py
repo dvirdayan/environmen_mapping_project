@@ -75,7 +75,7 @@ class PacketServer:
     def _send_stats_periodically(self):
         """Send protocol statistics to all connected clients periodically"""
         while self.running:
-            time.sleep(30)  # **LAG FIX: Send stats every 30 seconds instead of 5**
+            time.sleep(20)  # **LAG FIX: Send stats every 20 seconds instead of 5**
 
             # Clear old packet IDs to prevent memory issues
             current_time = time.time()

@@ -15,13 +15,14 @@ from proj3103.databaseV3.gui.environment_frames import (
 class DashboardFrame:
     """Main dashboard frame after login."""
 
-    def __init__(self, parent, username, is_admin, logout_callback, user_id, db_client, start_client_callback=None):
+    def __init__(self, parent, username, is_admin, logout_callback, user_id, db_client, start_client_callback=None, start_admin_dashboard_callback=None):
         self.parent = parent
         self.username = username
         self.is_admin = is_admin
         self.user_id = user_id
         self.db_client = db_client
         self.start_client_callback = start_client_callback
+        self.start_admin_dashboard_callback = start_admin_dashboard_callback
 
         # Create the main dashboard frame
         self.frame = ttk.Frame(parent)
@@ -45,23 +46,23 @@ class DashboardFrame:
         )
         welcome_label.pack(side=tk.LEFT, padx=10)
 
-        # Single "Start Client" button that behaves differently based on admin status
+        # Button layout based on admin status
         if self.is_admin:
-            # For admin users, "Start Client" opens the admin dashboard
-            start_client_btn = ttk.Button(
+            # For admin users, show only Admin Dashboard button
+            admin_btn = ttk.Button(
                 header_frame,
                 text="Admin Dashboard",
-                command=self.start_admin_dashboard
+                command=self.start_admin_dashboard_callback if self.start_admin_dashboard_callback else self.no_admin_dashboard_callback
             )
+            admin_btn.pack(side=tk.RIGHT, padx=5)
         else:
-            # For regular users, "Start Client" opens the regular client
+            # For regular users, show only Start Client button
             start_client_btn = ttk.Button(
                 header_frame,
                 text="Start Client",
                 command=self.start_client_callback if self.start_client_callback else self.no_client_callback
             )
-
-        start_client_btn.pack(side=tk.RIGHT, padx=5)
+            start_client_btn.pack(side=tk.RIGHT, padx=5)
 
         logout_btn = ttk.Button(header_frame, text="Logout", command=logout_callback)
         logout_btn.pack(side=tk.RIGHT, padx=10)
@@ -70,70 +71,9 @@ class DashboardFrame:
         """Fallback when no client callback is provided."""
         messagebox.showwarning("No Client", "Client functionality is not available.")
 
-    def start_admin_dashboard(self):
-        """Start admin dashboard with config from database_client."""
-        try:
-            # Check if client is authenticated
-            if not self.db_client.is_authenticated():
-                messagebox.showerror("Error", "Not authenticated. Please log in again.")
-                return
-
-            # Save config using database_client data
-            try:
-                config_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "client")
-                os.makedirs(config_dir, exist_ok=True)
-
-                # Get environments from database client
-                environments = self.db_client.get_environments()
-                if environments is None:
-                    environments = []
-
-                config_data = {
-                    "username": self.db_client.username,
-                    "user_id": self.db_client.user_id,
-                    "is_admin": self.db_client.is_admin,
-                    "server_host": self.db_client.host,
-                    "server_port": self.db_client.port,
-                    "session_token": self.db_client.session_token,
-                    "environments": environments
-                }
-
-                with open(os.path.join(config_dir, "user_config.json"), "w") as f:
-                    json.dump(config_data, f, indent=2)
-            except Exception as e:
-                # Log the error but continue - config save is optional
-                print(f"Warning: Could not save config: {e}")
-
-            # Find and start admin dashboard
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-
-            # Common locations to check
-            locations = [
-                os.path.join(current_dir, "..", "admin", "standalone_admin_dashboard.py"),
-                os.path.join(current_dir, "..", "..", "admin", "standalone_admin_dashboard.py"),
-                os.path.join(current_dir, "standalone_admin_dashboard.py"),
-                "standalone_admin_dashboard.py"
-            ]
-
-            dashboard_path = None
-            for loc in locations:
-                abs_path = os.path.abspath(loc)
-                if os.path.exists(abs_path):
-                    dashboard_path = abs_path
-                    break
-
-            if not dashboard_path:
-                messagebox.showerror("Error", "Admin dashboard script not found.")
-                return
-
-            # Start the dashboard
-            subprocess.Popen([sys.executable, dashboard_path])
-
-            # Success message
-            messagebox.showinfo("Success", f"Admin Dashboard started for {self.db_client.username}")
-
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to start admin dashboard: {e}")
+    def no_admin_dashboard_callback(self):
+        """Fallback when no admin dashboard callback is provided."""
+        messagebox.showwarning("No Admin Dashboard", "Admin dashboard functionality is not available.")
 
     def create_notebook(self):
         """Create the tabbed interface using database_client."""

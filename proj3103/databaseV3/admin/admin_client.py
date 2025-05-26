@@ -13,8 +13,8 @@ import argparse
 # Add the current directory to the path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from client_front import PacketCaptureClientUI
-from capture_backend import OptimizedPacketCaptureBackend
+from proj3103.databaseV3.client.client_front import PacketCaptureClientUI
+from proj3103.databaseV3.client.capture_backend import OptimizedPacketCaptureBackend
 from admin_dashboard import AdminDashboard
 
 
@@ -115,7 +115,7 @@ class AdminDashboardBackend(OptimizedPacketCaptureBackend):
         self.running = True
 
         # Import socket client here to avoid circular imports
-        from socket_client import StableSocketClient
+        from proj3103.databaseV3.client.socket_client import StableSocketClient
 
         # Create client with admin dashboard flag
         self.client = StableSocketClient(
