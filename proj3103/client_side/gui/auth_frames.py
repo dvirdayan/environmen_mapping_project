@@ -2,7 +2,6 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from proj3103.client_side.gui.input_validation import validate_username, validate_password, get_validation_rules
-import pygame
 
 
 
@@ -154,11 +153,6 @@ class LoginFrame:
 
     def show_validation_info(self):
         """Show validation requirements to the user."""
-        print("surprise ;))))")
-        pygame.mixer.init()
-        pygame.mixer.music.load("./gui/Surprise.mp3")
-        pygame.mixer.music.play()
-
         rules = get_validation_rules()
         info_text = "Input Requirements:\n\n"
 
@@ -172,7 +166,6 @@ class LoginFrame:
         info_text += f"• {rules['password']['allowed_chars']}\n"
         info_text += f"• {rules['password']['restrictions']}"
         messagebox.showinfo("Input Requirements", info_text)
-        pygame.mixer.music.stop()
 
 
 

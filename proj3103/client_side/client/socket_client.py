@@ -122,8 +122,8 @@ class StableSocketClient:
             'environments': self.environments,
             'username': username,
             'account_info': account_info,
-            'is_admin': self.is_admin,  # Add admin flag
-            'is_admin_dashboard': self.is_admin_dashboard  # NEW: Add admin dashboard flag
+            'is_admin': self.is_admin,
+            'is_admin_dashboard': self.is_admin_dashboard
         }
 
     def set_protocol_update_callback(self, callback):
