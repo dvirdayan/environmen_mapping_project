@@ -199,19 +199,36 @@ class EncryptedSocketClient(StableSocketClient):
         try:
             self.log("Starting encryption handshake...")
 
+            # Send client hello to indicate we support encryption
+            client_hello = {
+                'type': 'client_hello',
+                'supports_encryption': True,
+                'encryption_version': '1.0'
+            }
+
+            self.socket.sendall((json.dumps(client_hello) + '\n').encode('utf-8'))
+            self.log("Client hello sent")
+
             # Wait for server hello with public key
             hello_data = b""
             timeout_time = time.time() + 10.0
 
             while time.time() < timeout_time:
                 try:
+                    self.socket.settimeout(2.0)
                     chunk = self.socket.recv(4096)
                     if chunk:
                         hello_data += chunk
                         if b'\n' in hello_data:
                             break
+                    else:
+                        self.log("Server closed connection during handshake")
+                        return False
                 except socket.timeout:
                     continue
+                except Exception as e:
+                    self.log(f"Error receiving server hello: {e}")
+                    return False
 
             if not hello_data:
                 self.log("No server hello received")
@@ -223,7 +240,7 @@ class EncryptedSocketClient(StableSocketClient):
                 hello_msg = json.loads(hello_text.split('\n')[0])
 
                 if hello_msg.get('type') != 'server_hello':
-                    self.log("Invalid server hello")
+                    self.log(f"Invalid server hello type: {hello_msg.get('type')}")
                     return False
 
                 if not hello_msg.get('encryption_enabled'):
@@ -255,13 +272,20 @@ class EncryptedSocketClient(StableSocketClient):
 
                 while time.time() < timeout_time:
                     try:
+                        self.socket.settimeout(2.0)
                         chunk = self.socket.recv(4096)
                         if chunk:
                             ack_data += chunk
                             if b'\n' in ack_data:
                                 break
+                        else:
+                            self.log("Server closed connection during key exchange")
+                            return False
                     except socket.timeout:
                         continue
+                    except Exception as e:
+                        self.log(f"Error receiving key exchange ack: {e}")
+                        return False
 
                 if not ack_data:
                     self.log("No key exchange acknowledgment received")
@@ -280,15 +304,19 @@ class EncryptedSocketClient(StableSocketClient):
                         self.log("Encryption handshake complete - session is now encrypted")
                         return True
                     else:
-                        self.log("Invalid key exchange acknowledgment")
+                        self.log(f"Invalid key exchange acknowledgment: {ack_msg}")
                         return False
 
                 except Exception as e:
                     self.log(f"Failed to decrypt key exchange ack: {e}")
                     return False
 
-            except Exception as e:
+            except json.JSONDecodeError as e:
                 self.log(f"Error parsing server hello: {e}")
+                self.log(f"Received data: {hello_text}")
+                return False
+            except Exception as e:
+                self.log(f"Error processing server hello: {e}")
                 return False
 
         except Exception as e:

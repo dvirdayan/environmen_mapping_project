@@ -83,7 +83,7 @@ class RealPacketHandler:
         """Convert a Scapy packet to our dictionary format"""
         packet_dict = {
             'timestamp': datetime.now().isoformat(),
-            'protocol': 'Other',  # Default to 'Other' instead of 'UNKNOWN'
+            'protocol': 'Other',  # Default to 'Other'
             'highest_layer': 'Other',
             'packet_length': len(packet),
             'source_ip': None,

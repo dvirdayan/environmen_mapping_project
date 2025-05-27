@@ -2,7 +2,7 @@ import threading
 import time
 import queue
 from datetime import datetime
-from socket_client import StableSocketClient
+from encrypted_socket_client import EncryptedSocketClient
 from packet_handler import RealPacketHandler
 
 
@@ -146,11 +146,12 @@ class OptimizedPacketCaptureBackend:
         self.running = True
 
         # Create client with admin dashboard flag
-        self.client = StableSocketClient(
+        self.client = EncryptedSocketClient(
             self.server_host,
             self.server_port,
             self.log,
-            is_admin_dashboard=self.is_admin_dashboard  # NEW: Pass admin dashboard flag
+            is_admin_dashboard=self.is_admin_dashboard,
+            enable_encryption=True
         )
 
         # Set admin callback if admin
@@ -330,11 +331,12 @@ class AdminDashboardBackend(OptimizedPacketCaptureBackend):
         self.running = True
 
         # Create client with admin dashboard flag
-        self.client = StableSocketClient(
+        self.client = EncryptedSocketClient(
             self.server_host,
             self.server_port,
             self.log,
-            is_admin_dashboard=True  # Mark as admin dashboard
+            is_admin_dashboard=True,
+            enable_encryption=True
         )
 
         # Set admin callback if admin

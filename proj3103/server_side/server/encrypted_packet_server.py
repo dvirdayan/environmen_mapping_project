@@ -91,28 +91,26 @@ class EncryptedPacketServer(PacketServer):
         message_handler = None
 
         try:
-            # Make socket non-blocking for timeout handling
+            # Make socket blocking for initial handshake
             conn.settimeout(10)
 
-            # First, we need to detect if this is an encrypted client or regular client
-            # We'll wait for the first message to determine this
-            first_data = conn.recv(4096).decode('utf-8')
-
-            if not first_data:
-                print(f"[SERVER] No data received from {addr}")
-                return
-
-            # Check if this looks like an auth message (unencrypted client)
+            # Wait for the first message to determine client type
             try:
-                # Try to parse as JSON
-                lines = first_data.strip().split('\n')
+                first_data = conn.recv(4096)
+
+                if not first_data:
+                    print(f"[SERVER] No data received from {addr}")
+                    return
+
+                first_text = first_data.decode('utf-8').strip()
+                print(f"[SERVER] Received from {addr}: {first_text[:100]}...")
+
+                lines = first_text.split('\n')
                 first_msg = json.loads(lines[0])
 
                 if first_msg.get('type') == 'auth':
-                    # This is an unencrypted client - use original authentication flow
                     print(f"[SERVER] Detected unencrypted client from {addr}")
-
-                    # Process the auth message
+                    # Handle unencrypted client authentication
                     auth_json = first_msg
 
                     # Extract username from auth data
@@ -128,21 +126,13 @@ class EncryptedPacketServer(PacketServer):
 
                     is_admin_dashboard = auth_json.get('is_admin_dashboard', False)
 
-                    if is_admin_dashboard:
-                        print(f"[SERVER] Admin dashboard connection from {addr} as user: {username}")
-                    else:
-                        print(f"[SERVER] Client {addr} attempting authentication as user: {username}")
-
                     # Check if admin user
                     if auth_json.get('is_admin'):
                         is_admin = True
                         self.admin_clients.add(username)
                         print(f"[SERVER] Admin user {username} connected")
 
-                    # Track connection time
-                    self.client_connect_times[username] = time.time()
-
-                    # Handle environments (same as original)
+                    # Handle environments
                     environments = auth_json.get('environments', [])
                     if not environments:
                         env_name = auth_json.get('env_name')
@@ -152,99 +142,55 @@ class EncryptedPacketServer(PacketServer):
                         else:
                             environments = [{'env_name': 'default', 'env_password': 'default_password'}]
 
-                    # Extract environment names
                     verified_environments = [env.get('env_name') for env in environments if env.get('env_name')]
-                    print(f"[SERVER] Accepting environments: {verified_environments}")
                     authenticated = True
 
-                    # Initialize environments
-                    for env in environments:
-                        env_name = env.get('env_name')
-                        env_password = env.get('env_password')
-                        if env_name in verified_environments:
-                            self.add_environment(env_name, env_password)
-                            if not is_admin_dashboard:
-                                with self.environment_lock:
-                                    self.environments[env_name]['clients'][username] = {
-                                        'username': username,
-                                        'connected': True,
-                                        'account_info': account_info
-                                    }
+                    # Register client and send response (same as original logic)
+                    # ... [rest of unencrypted auth logic] ...
 
-                    # Register client
-                    with self.clients_lock:
-                        if username in self.clients_by_username:
-                            self.clients_by_username[username]['connected'] = True
-                            self.clients_by_username[username]['environments'] = verified_environments
-                            self.clients_by_username[username]['account_info'] = account_info
-                            self.clients_by_username[username]['socket'] = conn
-                            self.clients_by_username[username]['last_addr'] = addr
-                            self.clients_by_username[username]['encrypted'] = False
-                            print(f"[SERVER] User {username} reconnected with environments: {verified_environments}")
-                        else:
-                            self.clients_by_username[username] = {
-                                'username': username,
-                                'packet_count': 0,
-                                'protocol_counts': {
-                                    'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
-                                    'FTP': 0, 'SMTP': 0, 'Other': 0
-                                },
-                                'connected': True,
-                                'environments': verified_environments,
-                                'account_info': account_info,
-                                'socket': conn,
-                                'last_addr': addr,
-                                'encrypted': False
-                            }
-                            print(f"[SERVER] New user {username} registered with environments: {verified_environments}")
-
-                        if is_admin_dashboard:
-                            self.admin_dashboard_connections[addr] = username
-                            self.admin_dashboard_clients.add(username)
-                        else:
-                            self.active_connections[addr] = username
-
-                    # Send auth success response (unencrypted)
-                    response = {
-                        'status': 'authenticated',
-                        'message': f'Connected as {"admin dashboard" if is_admin_dashboard else "user"}: {username}',
-                        'environments': verified_environments
-                    }
-                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
-
-                    # Process any remaining data
-                    if len(lines) > 1:
-                        buffer = '\n'.join(lines[1:])
-
-                    # Update UI
-                    if self.ui_update_callback:
-                        self.ui_update_callback()
-
-                elif first_msg.get('type') == 'client_hello' or 'supports_encryption' in first_msg:
-                    # This is an encrypted client
+                elif first_msg.get('type') == 'client_hello' and first_msg.get('supports_encryption'):
                     print(f"[SERVER] Detected encryption-capable client from {addr}")
 
-                    # Send server public key
+                    # Send server hello with public key
                     public_key_msg = {
                         'type': 'server_hello',
                         'encryption_enabled': True,
                         'public_key': self.crypto.get_public_key_pem()
                     }
-                    conn.sendall((json.dumps(public_key_msg) + '\n').encode('utf-8'))
+                    response = json.dumps(public_key_msg) + '\n'
+                    conn.sendall(response.encode('utf-8'))
                     print(f"[SERVER] Sent public key to {addr}")
 
-                    # Continue with encryption handshake
                     # Wait for key exchange
                     key_exchange_data = conn.recv(4096)
-                    if key_exchange_data:
-                        key_exchange_text = key_exchange_data.decode('utf-8').strip()
-                        key_exchange_msg = json.loads(key_exchange_text.split('\n')[0])
+                    if not key_exchange_data:
+                        print(f"[SERVER] No key exchange data from {addr}")
+                        return
 
-                        if key_exchange_msg.get('type') == 'key_exchange':
-                            print(f"[SERVER] Received key exchange from {addr}")
+                    key_exchange_text = key_exchange_data.decode('utf-8').strip()
+                    key_exchange_lines = key_exchange_text.split('\n')
+                    key_exchange_msg = json.loads(key_exchange_lines[0])
 
-                            # Process key exchange
-                            client_crypto.process_key_exchange_message(key_exchange_msg)
+                    if key_exchange_msg.get('type') == 'key_exchange':
+                        print(f"[SERVER] Processing key exchange from {addr}")
+
+                        # Process key exchange - extract AES key
+                        try:
+                            # Use the main server crypto handler to decrypt the key exchange
+                            encrypted_key = key_exchange_msg.get('encrypted_key')
+                            if not encrypted_key:
+                                raise ValueError("No encrypted key in message")
+                            # Decrypt with server's RSA private key
+                            decrypted_json = self.crypto.rsa_decrypt(encrypted_key)
+                            key_data = json.loads(decrypted_json)
+
+                            # Extract AES key and IV
+                            import base64
+                            aes_key = base64.b64decode(key_data['aes_key'])
+                            aes_iv = base64.b64decode(key_data['aes_iv'])
+
+                            # Set up client-specific crypto handler
+                            client_crypto.set_aes_key(aes_key, aes_iv)
 
                             # Create message handler
                             message_handler = SecureMessageHandler(client_crypto)
@@ -252,7 +198,7 @@ class EncryptedPacketServer(PacketServer):
                             self.client_message_handlers[addr] = message_handler
                             self.encrypted_clients.add(addr)
 
-                            # Send acknowledgment
+                            # Send encrypted acknowledgment
                             ack_msg = {'type': 'key_exchange_ack', 'status': 'success'}
                             encrypted_ack = message_handler.prepare_message(ack_msg)
                             conn.sendall(encrypted_ack.encode('utf-8'))
@@ -267,27 +213,138 @@ class EncryptedPacketServer(PacketServer):
                                 auth_json = message_handler.process_message(auth_text)
 
                                 if auth_json and auth_json.get('type') == 'auth':
-                                    # Process auth (same as above but for encrypted client)
-                                    # ... (same auth processing code)
+                                    print(f"[SERVER] Processing encrypted auth from {addr}")
+
+                                    # Extract auth info (same logic as unencrypted)
+                                    username = auth_json.get('username')
+                                    account_info = auth_json.get('account_info', {})
+
+                                    if not username and isinstance(account_info, dict):
+                                        username = account_info.get('username')
+                                    if not username and isinstance(account_info, str):
+                                        username = account_info
+                                    if not username:
+                                        username = f"user_{addr[0]}_{addr[1]}"
+
+                                    is_admin_dashboard = auth_json.get('is_admin_dashboard', False)
+
+                                    if auth_json.get('is_admin'):
+                                        is_admin = True
+                                        self.admin_clients.add(username)
+
+                                    # Handle environments
+                                    environments = auth_json.get('environments', [])
+                                    if not environments:
+                                        environments = [{'env_name': 'default', 'env_password': 'default_password'}]
+
+                                    verified_environments = [env.get('env_name') for env in environments if
+                                                             env.get('env_name')]
                                     authenticated = True
+
+                                    print(
+                                        f"[SERVER] Encrypted client {username} authenticated with environments: {verified_environments}")
+                                else:
+                                    print(f"[SERVER] Invalid encrypted auth from {addr}")
+                                    return
+                            else:
+                                print(f"[SERVER] No encrypted auth received from {addr}")
+                                return
+
+                        except Exception as e:
+                            print(f"[SERVER] Key exchange processing failed for {addr}: {e}")
+                            return
+                    else:
+                        print(f"[SERVER] Expected key_exchange, got {key_exchange_msg.get('type')}")
+                        return
                 else:
-                    # Unknown message type
-                    print(f"[SERVER] Unknown initial message from {addr}: {first_msg.get('type')}")
+                    print(f"[SERVER] Unknown initial message type from {addr}: {first_msg.get('type')}")
                     return
 
-            except json.JSONDecodeError:
-                # Not JSON - might be a legacy client
-                print(f"[SERVER] Non-JSON data from {addr}, closing connection")
+            except json.JSONDecodeError as e:
+                print(f"[SERVER] JSON decode error from {addr}: {e}")
+                return
+            except Exception as e:
+                print(f"[SERVER] Error parsing initial message from {addr}: {e}")
                 return
 
             if not authenticated:
                 print(f"[SERVER] Authentication failed for {addr}")
                 return
 
-            # Make socket non-blocking for the packet processing loop
+            # Track connection time
+            self.client_connect_times[username] = time.time()
+
+            # Initialize environments
+            for env in (auth_json.get('environments', []) if 'auth_json' in locals() else []):
+                env_name = env.get('env_name')
+                env_password = env.get('env_password')
+                if env_name in verified_environments:
+                    self.add_environment(env_name, env_password)
+                    if not is_admin_dashboard:
+                        with self.environment_lock:
+                            self.environments[env_name]['clients'][username] = {
+                                'username': username,
+                                'connected': True,
+                                'account_info': account_info if 'account_info' in locals() else {}
+                            }
+
+            # Register client
+            with self.clients_lock:
+                if username in self.clients_by_username:
+                    self.clients_by_username[username]['connected'] = True
+                    self.clients_by_username[username]['environments'] = verified_environments
+                    self.clients_by_username[username][
+                        'account_info'] = account_info if 'account_info' in locals() else {}
+                    self.clients_by_username[username]['socket'] = conn
+                    self.clients_by_username[username]['last_addr'] = addr
+                    self.clients_by_username[username]['encrypted'] = encrypted_session
+                    print(
+                        f"[SERVER] User {username} reconnected ({'encrypted' if encrypted_session else 'unencrypted'})")
+                else:
+                    self.clients_by_username[username] = {
+                        'username': username,
+                        'packet_count': 0,
+                        'protocol_counts': {
+                            'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0,
+                            'FTP': 0, 'SMTP': 0, 'Other': 0
+                        },
+                        'connected': True,
+                        'environments': verified_environments,
+                        'account_info': account_info if 'account_info' in locals() else {},
+                        'socket': conn,
+                        'last_addr': addr,
+                        'encrypted': encrypted_session
+                    }
+                    print(
+                        f"[SERVER] New user {username} registered ({'encrypted' if encrypted_session else 'unencrypted'})")
+
+                if is_admin_dashboard:
+                    self.admin_dashboard_connections[addr] = username
+                    self.admin_dashboard_clients.add(username)
+                else:
+                    self.active_connections[addr] = username
+
+            # Send auth success response
+            response = {
+                'status': 'authenticated',
+                'message': f'Connected as {"admin dashboard" if is_admin_dashboard else "user"}: {username}',
+                'environments': verified_environments
+            }
+
+            if encrypted_session and message_handler:
+                encrypted_response = message_handler.prepare_message(response)
+                conn.sendall(encrypted_response.encode('utf-8'))
+            else:
+                conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+
+            # Update UI
+            if self.ui_update_callback:
+                self.ui_update_callback()
+
+            # Make socket non-blocking for packet processing
             conn.setblocking(False)
 
-            # Enter main processing loop (same as original)
+            # Enter main processing loop
             while self.running and authenticated:
                 try:
                     readable, _, _ = select.select([conn], [], [], 0.5)
@@ -311,8 +368,9 @@ class EncryptedPacketServer(PacketServer):
                                         decrypted_msg = message_handler.process_message(line)
                                         if decrypted_msg:
                                             line = json.dumps(decrypted_msg)
-                                    except:
-                                        pass
+                                    except Exception as e:
+                                        print(f"[SERVER] Decryption error from {username}: {e}")
+                                        continue
 
                                 # Process packet
                                 try:
@@ -344,6 +402,8 @@ class EncryptedPacketServer(PacketServer):
 
         except Exception as e:
             print(f"[SERVER] Client handler error for {addr}: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             # Cleanup
             if addr in self.client_crypto:
