@@ -95,7 +95,7 @@ def safe_cleanup_temp_file(file_path, delay_seconds=5):
 
 
 def load_config_safely(config_path):
-    """Safely load configuration from file with error handling"""
+    """load configuration from file with error handling"""
     config = {
         'username': None,
         'user_id': None,
