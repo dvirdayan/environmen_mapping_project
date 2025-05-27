@@ -355,7 +355,7 @@ class SecureCredentialDatabase:
 
 
 class SecureDatabaseServer:
-    def __init__(self, host='localhost', port=9008, secret_key=None):
+    def __init__(self, host='0.0.0.0', port=9008, secret_key=None):
         self.host = host
         self.port = port
         self.secret_key = secret_key or secrets.token_hex(32)
