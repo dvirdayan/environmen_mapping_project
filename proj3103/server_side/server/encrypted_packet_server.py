@@ -22,11 +22,9 @@ class EncryptedPacketServer(PacketServer):
 
     def __init__(self, host='0.0.0.0', port=9007, enable_encryption=True):
         super().__init__(host, port)
-        self.enable_encryption = enable_encryption and CRYPTO_AVAILABLE
 
+        self.enable_encryption = enable_encryption and CRYPTO_AVAILABLE
         if self.enable_encryption:
-            print("[SERVER] Encryption support enabled")
-            # Server crypto handler
             self.crypto = CryptoHandler()
             self.setup_encryption()
 

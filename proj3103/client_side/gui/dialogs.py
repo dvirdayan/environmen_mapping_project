@@ -14,7 +14,7 @@ class AddEnvironmentDialog:
         # Create the dialog window
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Create Environment")
-        self.dialog.geometry("400x200")
+        self.dialog.geometry("500x200")
         self.dialog.resizable(False, False)
         self.dialog.transient(parent)  # Set as transient to main window
         self.dialog.grab_set()  # Modal dialog
@@ -35,10 +35,10 @@ class AddEnvironmentDialog:
         name_frame = ttk.Frame(frame)
         name_frame.pack(fill=tk.X, pady=5)
 
-        name_label = ttk.Label(name_frame, text="Environment Name:", width=15)
-        name_label.pack(side=tk.LEFT, padx=5)
+        name_label = ttk.Label(name_frame, text="Environment Name:", width=20)
+        name_label.pack(side=tk.LEFT, padx=10)
 
-        self.name_entry = ttk.Entry(name_frame, width=30)
+        self.name_entry = ttk.Entry(name_frame, width=35)
         self.name_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
         # Environment password field

@@ -46,7 +46,6 @@ class RealPacketHandler:
             def packet_handler(packet):
                 if not self.running:
                     return False  # Stop sniffing
-
                 try:
                     # Convert Scapy packet to our format
                     packet_dict = self._scapy_to_dict(packet)

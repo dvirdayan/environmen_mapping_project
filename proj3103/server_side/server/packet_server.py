@@ -15,27 +15,21 @@ class PacketServer:
         self.server_socket.bind((self.host, self.port))
         self.server_socket.listen()
         print(f"Server listening on {self.host}:{self.port}")
-
         # Dictionary to store client information by username: {username: client_info}
         self.clients_by_username = {}
-
         # Dictionary to track active connections: {client_addr: username}
         self.active_connections = {}
-
         # NEW: Track admin dashboard connections separately
         self.admin_dashboard_connections = {}  # {client_addr: username}
         self.admin_dashboard_clients = set()  # usernames of admin dashboard connections
-
         # Add environment tracking
         self.environments = {}  # Dictionary to store env data: {env_name: {clients, packets}}
         self.environment_lock = threading.Lock()
-
         # Add environment credential validation
         self.env_credentials = {
             # Default environment for backward compatibility
             "default": "default_password"
         }
-
         # Dictionary to store protocol counts: {protocol_name: count}
         self.protocol_counts = {
             'TCP': 0,
@@ -46,28 +40,21 @@ class PacketServer:
             'SMTP': 0,
             'Other': 0
         }
-
         # Lock for thread safety when accessing clients dictionary
         self.clients_lock = threading.Lock()
-
         # Lock for thread safety when accessing protocol counts
         self.protocol_lock = threading.Lock()
-
         # Flag to control server running state
         self.running = True
-
         # UI callbacks
         self.ui_update_callback = None
-
         # Create stats sender thread
         self.stats_thread = threading.Thread(target=self._send_stats_periodically)
         self.stats_thread.daemon = True
-
         # Track processed packet IDs to prevent duplicate counting globally
         self.processed_packet_ids = set()
         self.processed_packets_lock = threading.Lock()
         self.last_packet_id_cleanup = time.time()
-
         # Admin tracking
         self.admin_clients = set()
         self.client_connect_times = {}
@@ -378,7 +365,7 @@ class PacketServer:
             # Determine protocol
             protocol = self.determine_protocol(packet)
 
-            # **FIXED: Single deduplication check**
+            # Single deduplication check
             is_new_packet = False
             with self.processed_packets_lock:
                 if packet_id not in self.processed_packet_ids:
@@ -445,7 +432,8 @@ class PacketServer:
                             self.environments[env_name]['packet_count'] += 1
                             env_total = sum(self.environments[env_name]['protocol_counts'].values())
                             print(
-                                f"[SERVER] Environment {env_name} - {protocol}: {self.environments[env_name]['protocol_counts'][protocol]}, Total: {env_total}")
+                                f"[SERVER] Environment {env_name} - {protocol}: "
+                                f"{self.environments[env_name]['protocol_counts'][protocol]}, Total: {env_total}")
                         else:
                             print(f"[SERVER] Environment {env_name} not found, skipping")
 

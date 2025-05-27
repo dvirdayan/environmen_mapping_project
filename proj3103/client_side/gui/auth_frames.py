@@ -29,7 +29,6 @@ class AuthFrame:
         exit_btn = ttk.Button(self.frame, text="Exit", command=exit_callback, width=20)
         exit_btn.pack(pady=10)
 
-
     def show_validation_info(self):
         """Show validation requirements to the user."""
         rules = get_validation_rules()
@@ -166,8 +165,6 @@ class LoginFrame:
         info_text += f"• {rules['password']['allowed_chars']}\n"
         info_text += f"• {rules['password']['restrictions']}"
         messagebox.showinfo("Input Requirements", info_text)
-
-
 
     def trigger_login(self):
         """Trigger the login callback with validated entries."""
