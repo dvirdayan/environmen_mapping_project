@@ -735,7 +735,7 @@ def create_default_users(db: SecureCredentialDatabase):
 
 def main():
     """Main function to start the secure database server."""
-    HOST = 'localhost'
+    HOST = '0.0.0.0'
     PORT = 9008
 
     print("=== Secure Database Server ===")
