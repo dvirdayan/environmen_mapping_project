@@ -13,7 +13,7 @@ class OptimizedPacketCaptureBackend:
 
         # Connection settings
         self.capture_interface = None
-        self.server_host = 'localhost'
+        self.server_host = '176.9.45.249'
         self.server_port = 9007
         self.environments = []
         self.username = None

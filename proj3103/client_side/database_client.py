@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class DatabaseClient:
-    def __init__(self, host='localhost', port=9008):
+    def __init__(self, host='176.9.45.249', port=9008):
         self.host = host
         self.port = port
         self.session_token = None
@@ -236,7 +236,7 @@ def main():
     client = DatabaseClient()
 
     print("=== Database Client ===")
-    print("Make sure the database server is running on localhost:9008")
+    print("Make sure the database server is running")
 
     while True:
         if not client.is_authenticated():

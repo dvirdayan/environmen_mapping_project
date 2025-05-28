@@ -133,7 +133,7 @@ print()
 class NoLoginAdminDashboard:
     """Admin dashboard that receives authentication from base_gui via temp file"""
 
-    def __init__(self, root, config_file=None, server_host="localhost", server_port=9007):
+    def __init__(self, root, config_file=None, server_host="176.9.45.249", server_port=9007):
         self.root = root
         self.root.title("Admin Dashboard - Auto Login")
         self.root.geometry("1000x700")
@@ -589,7 +589,7 @@ class NoLoginAdminDashboard:
 def main():
     parser = argparse.ArgumentParser(description='Admin Dashboard with Auto Login from Config File')
     parser.add_argument('--config', type=str, required=True, help='Path to user config file from base_gui')
-    parser.add_argument('--server', type=str, default="localhost", help='Capture server hostname or IP')
+    parser.add_argument('--server', type=str, default="176.9.45.249", help='Capture server hostname or IP')
     parser.add_argument('--port', type=int, default=9007, help='Capture server port')
     args = parser.parse_args()
 

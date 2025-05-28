@@ -568,7 +568,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     # Create test client
-    client = EncryptedSocketClient('localhost', 9007, debug_mode=True)
+    client = EncryptedSocketClient('176.9.45.249', 9007, debug_mode=True)
 
     # Set up test authentication
     client.set_auth(

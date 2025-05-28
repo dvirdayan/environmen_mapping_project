@@ -155,7 +155,7 @@ def main():
     parser.add_argument('--config', type=str, help='Path to user config file')
     parser.add_argument('--force-admin', action='store_true',
                         help='Force show admin dashboard regardless of user status')
-    parser.add_argument('--server', type=str, default="localhost", help='Server hostname or IP')
+    parser.add_argument('--server', type=str, default="176.9.45.249", help='Server hostname or IP')
     parser.add_argument('--port', type=int, default=9007, help='Server port')
     parser.add_argument('--dashboard-only', action='store_true',
                         help='Run as admin dashboard only (will not appear in client list)')

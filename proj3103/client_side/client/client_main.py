@@ -357,7 +357,7 @@ def main():
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='Packet Capture Client')
     parser.add_argument('--config', type=str, help='Path to user config file')
-    parser.add_argument('--server', type=str, default="localhost", help='Server hostname or IP')
+    parser.add_argument('--server', type=str, default="176.9.45.249", help='Server hostname or IP')
     parser.add_argument('--port', type=int, default=9007, help='Server port')
     parser.add_argument('--distribution', type=str, default="all",
                         choices=["all", "round-robin", "random", "specific"],
@@ -369,7 +369,7 @@ def main():
     except Exception as e:
         print(f"Error parsing arguments: {e}")
         args = argparse.Namespace(
-            config=None, server="localhost", port=9007,
+            config=None, server="176.9.45.249", port=9007,
             distribution="all", debug=True
         )
 

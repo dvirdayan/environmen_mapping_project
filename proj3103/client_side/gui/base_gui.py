@@ -17,7 +17,7 @@ from proj3103.client_side.gui.dashboard import DashboardFrame
 
 
 class CredentialManagerGUI:
-    def __init__(self, root, server_host='localhost', server_port=9008):
+    def __init__(self, root, server_host='176.9.45.249', server_port=9008):
         self.root = root
         self.root.title("Credential Manager")
         self.root.geometry("800x500")
@@ -317,7 +317,7 @@ class CredentialManagerGUI:
             args = [
                 sys.executable, dashboard_path,
                 "--config", config_file_path,
-                "--server", "localhost",  # Admin dashboard connects to capture server
+                "--server", "176.9.45.249",  # Admin dashboard connects to capture server
                 "--port", "9007"  # Default capture server port
             ]
 
@@ -463,7 +463,7 @@ def main():
         pass  # Ignore if icon file doesn't exist
 
     # You can customize server connection here
-    app = CredentialManagerGUI(root, server_host='localhost', server_port=9008)
+    app = CredentialManagerGUI(root, server_host='176.9.45.249', server_port=9008)
     root.mainloop()
 
 
