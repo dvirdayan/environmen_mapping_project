@@ -450,7 +450,7 @@ class EncryptedPacketServer(PacketServer):
             print(f"[SERVER] Connection with {username or addr}{dashboard_text} closed")
 
     def _send_stats_periodically(self):
-        """Override to handle encrypted clients properly"""
+        """Override to handle encrypted clients properly with personal vs environment protocol counts"""
         # Use the parent class implementation but check for encryption
         while self.running:
             time.sleep(30)
@@ -518,21 +518,40 @@ class EncryptedPacketServer(PacketServer):
                                 if client_info['username'] in self.clients_by_username:
                                     self.clients_by_username[client_info['username']]['connected'] = False
 
-                    # Send environment-specific stats
+                    # MODIFIED: Send different stats based on admin status
+                    username = client_info['username']
+                    is_admin = username in self.admin_clients
                     client_environments = client_info.get('environments', [])
-                    for env_name in client_environments:
-                        with self.environment_lock:
-                            if env_name in self.environments:
-                                env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
-                            else:
-                                continue
 
-                        env_stats_message = {
-                            'type': 'stats',
-                            'environment': env_name,
-                            'protocol_counts': env_protocol_counts,
-                            'timestamp': datetime.now().isoformat()
-                        }
+                    for env_name in client_environments:
+                        if is_admin:
+                            # Admin clients get environment-wide protocol counts
+                            with self.environment_lock:
+                                if env_name in self.environments:
+                                    env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
+                                else:
+                                    continue
+
+                            env_stats_message = {
+                                'type': 'stats',
+                                'environment': env_name,
+                                'protocol_counts': env_protocol_counts,
+                                'timestamp': datetime.now().isoformat(),
+                                'stats_type': 'environment'  # Indicate this is environment-wide data
+                            }
+                        else:
+                            # Non-admin clients get their personal protocol counts
+                            personal_protocol_counts = client_info.get('protocol_counts', {
+                                'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
+                            }).copy()
+
+                            env_stats_message = {
+                                'type': 'stats',
+                                'environment': env_name,
+                                'protocol_counts': personal_protocol_counts,
+                                'timestamp': datetime.now().isoformat(),
+                                'stats_type': 'personal'  # Indicate this is personal data
+                            }
 
                         if socket_conn:
                             try:

@@ -6,7 +6,7 @@ from encrypted_socket_client import EncryptedSocketClient
 from packet_handler import RealPacketHandler
 
 
-class OptimizedPacketCaptureBackend:
+class PacketCaptureBackend:
     def __init__(self, ui=None, is_admin_dashboard=False):
         # UI reference for callbacks
         self.ui = ui
@@ -312,12 +312,12 @@ class OptimizedPacketCaptureBackend:
 
 
 # For backward compatibility
-class StablePacketCaptureBackend(OptimizedPacketCaptureBackend):
+class StablePacketCaptureBackend(PacketCaptureBackend):
     pass
 
 
 # NEW: Specialized backend for admin dashboard
-class AdminDashboardBackend(OptimizedPacketCaptureBackend):
+class AdminDashboardBackend(PacketCaptureBackend):
     """Backend specifically for admin dashboard connections"""
 
     def __init__(self, ui=None):

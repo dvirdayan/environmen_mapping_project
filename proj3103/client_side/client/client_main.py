@@ -11,7 +11,7 @@ from pathlib import Path
 try:
     from client_dashboard import PacketCaptureClientUI
     from pie_chart import integrate_pie_chart_to_ui
-    from capture_backend import OptimizedPacketCaptureBackend
+    from capture_backend import PacketCaptureBackend
     from environment_selector import enhance_client_ui_with_environment_selector
     from proj3103.client_side.admin.admin_dashboard import AdminDashboard
 except ImportError as e:
@@ -448,7 +448,7 @@ def main():
 
         # Create the backend
         debug_log("Creating backend instance...")
-        backend = OptimizedPacketCaptureBackend(ui=ui)
+        backend = PacketCaptureBackend(ui=ui)
         debug_log("Backend created successfully")
 
         # Configure the backend
