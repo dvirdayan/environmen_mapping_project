@@ -226,7 +226,7 @@ class PacketServer:
         # Check for specific application protocols
         if highest_layer == 'HTTP' or src_port == '80' or dst_port == '80':
             return 'HTTP'
-        elif highest_layer == 'TLS' or src_port == '443' or dst_port == '443':
+        elif highest_layer == 'HTTPS' or src_port == '443' or dst_port == '443':
             return 'HTTPS'
         elif highest_layer == 'FTP' or src_port == '21' or dst_port == '21':
             return 'FTP'
