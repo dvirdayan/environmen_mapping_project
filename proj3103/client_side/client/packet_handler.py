@@ -71,11 +71,11 @@ class RealPacketHandler:
                   stop_filter=lambda x: not self.running)
 
         except ImportError:
-            print("Scapy not available, falling server_side to test packets")
+            print("Scapy not available, falling back to test packets")
             self._generate_test_packets()
         except Exception as e:
             print(f"Error in real packet capture: {e}")
-            print("Falling server_side to test packets")
+            print("Falling back to test packets")
             self._generate_test_packets()
 
     def _scapy_to_dict(self, packet):
@@ -101,43 +101,46 @@ class RealPacketHandler:
         # Extract TCP info and classify application protocols
         if packet.haslayer('TCP'):
             tcp_layer = packet['TCP']
-            packet_dict['source_port'] = tcp_layer.sport
-            packet_dict['destination_port'] = tcp_layer.dport
+            packet_dict['source_port'] = str(tcp_layer.sport)  # Convert to string for consistency
+            packet_dict['destination_port'] = str(tcp_layer.dport)  # Convert to string for consistency
             packet_dict['protocol'] = 'TCP'
             packet_dict['highest_layer'] = 'TCP'
 
-            # Classify by port numbers
-            ports = [tcp_layer.sport, tcp_layer.dport]
-            if 80 in ports:
+            # Classify by port numbers - use string comparison for consistency
+            sports = str(tcp_layer.sport)
+            dports = str(tcp_layer.dport)
+
+            if sports == '80' or dports == '80':
                 packet_dict['highest_layer'] = 'HTTP'
                 packet_dict['protocol'] = 'HTTP'
-            elif 443 in ports:
-                packet_dict['highest_layer'] = 'HTTPS'
+            elif sports == '443' or dports == '443':
+                # FIXED: Set to TLS for real packets (server expects 'TLS' for HTTPS detection)
+                packet_dict['highest_layer'] = 'TLS'
                 packet_dict['protocol'] = 'HTTPS'
-            elif 21 in ports:
+            elif sports == '21' or dports == '21':
                 packet_dict['highest_layer'] = 'FTP'
                 packet_dict['protocol'] = 'FTP'
-            elif 25 in ports or 587 in ports:
+            elif sports == '25' or dports == '25' or sports == '587' or dports == '587':
                 packet_dict['highest_layer'] = 'SMTP'
                 packet_dict['protocol'] = 'SMTP'
 
         # Extract UDP info
         elif packet.haslayer('UDP'):
             udp_layer = packet['UDP']
-            packet_dict['source_port'] = udp_layer.sport
-            packet_dict['destination_port'] = udp_layer.dport
+            packet_dict['source_port'] = str(udp_layer.sport)  # Convert to string for consistency
+            packet_dict['destination_port'] = str(udp_layer.dport)  # Convert to string for consistency
             packet_dict['protocol'] = 'UDP'
             packet_dict['highest_layer'] = 'UDP'
 
             # Check for DNS
-            if 53 in [udp_layer.sport, udp_layer.dport]:
+            if str(udp_layer.sport) == '53' or str(udp_layer.dport) == '53':
                 packet_dict['highest_layer'] = 'DNS'
 
         # Ensure we return a known protocol
         known_protocols = ['TCP', 'UDP', 'HTTP', 'HTTPS', 'FTP', 'SMTP']
         if packet_dict['protocol'] not in known_protocols:
             packet_dict['protocol'] = 'Other'
-        if packet_dict['highest_layer'] not in known_protocols + ['DNS']:
+        if packet_dict['highest_layer'] not in known_protocols + ['DNS', 'TLS']:
             packet_dict['highest_layer'] = 'Other'
 
         return packet_dict
@@ -152,16 +155,41 @@ class RealPacketHandler:
                 counter += 1
                 protocol = protocols[counter % len(protocols)]
 
-                # Create varied test packets
+                # Create varied test packets with proper port/protocol mapping
+                if protocol == 'HTTP':
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = '80'
+                    highest_layer = 'HTTP'
+                elif protocol == 'HTTPS':
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = '443'
+                    highest_layer = 'TLS'  # FIXED: Use 'TLS' for HTTPS packets to match real traffic
+                elif protocol == 'FTP':
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = '21'
+                    highest_layer = 'FTP'
+                elif protocol == 'SMTP':
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = '25'
+                    highest_layer = 'SMTP'
+                elif protocol == 'UDP':
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = '53'
+                    highest_layer = 'UDP'
+                else:  # TCP
+                    src_port = str(1024 + (counter % 30000))
+                    dst_port = str(8080)
+                    highest_layer = 'TCP'
+
                 packet = {
                     'timestamp': datetime.now().isoformat(),
                     'protocol': protocol,
-                    'highest_layer': protocol,
+                    'highest_layer': highest_layer,
                     'packet_length': 64 + (counter % 1000),
                     'source_ip': f'192.168.{(counter % 254) + 1}.{(counter % 100) + 1}',
                     'destination_ip': f'10.0.{(counter % 50) + 1}.{(counter % 200) + 1}',
-                    'source_port': 1024 + (counter % 30000),
-                    'destination_port': [80, 443, 21, 25, 53, 8080][counter % 6],
+                    'source_port': src_port,
+                    'destination_port': dst_port,
                     'test_counter': counter
                 }
 

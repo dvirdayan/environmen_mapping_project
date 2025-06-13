@@ -309,6 +309,7 @@ class StableSocketClient:
             if isinstance(packet_dict, dict):
                 if self.username and 'username' not in packet_dict:
                     packet_dict['username'] = self.username
+                print(f"[CLIENT] Sending packet with username: {packet_dict.get('username')}")
                 if 'packet_id' not in packet_dict:
                     packet_dict['packet_id'] = str(uuid.uuid4())
                 envs_to_send = self.environments
