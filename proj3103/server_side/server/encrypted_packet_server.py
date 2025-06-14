@@ -6,7 +6,7 @@ from datetime import datetime
 import os
 import sys
 
-# Import the original packet server
+# Import the updated packet server with robust personal protocol stats
 from proj3103.server_side.server.packet_server import PacketServer
 
 # Import encryption module
@@ -66,6 +66,135 @@ class EncryptedPacketServer(PacketServer):
         # Display public key
         public_key = self.crypto.get_public_key_pem()
         print("[SERVER] RSA public key generated")
+
+    def _send_stats_to_clients(self):
+        """Override parent method to handle encrypted clients with personal vs environment stats"""
+        # Get all connected clients (regular + admin dashboard)
+        all_connected_clients = {}
+
+        with self.clients_lock:
+            # Get regular clients
+            for addr, username in self.active_connections.items():
+                if addr in self.admin_dashboard_connections:
+                    continue  # Skip admin dashboard connections from regular list
+
+                if username in self.clients_by_username and self.clients_by_username[username].get('connected', False):
+                    all_connected_clients[addr] = {
+                        'client_info': self.clients_by_username[username],
+                        'username': username,
+                        'is_admin_dashboard': False
+                    }
+
+            # Get admin dashboard clients
+            for addr, username in self.admin_dashboard_connections.items():
+                if username in self.clients_by_username and self.clients_by_username[username].get('connected', False):
+                    all_connected_clients[addr] = {
+                        'client_info': self.clients_by_username[username],
+                        'username': username,
+                        'is_admin_dashboard': True
+                    }
+
+        if not all_connected_clients:
+            return
+
+        # Send global stats first
+        with self.protocol_lock:
+            global_protocol_counts = self.protocol_counts.copy()
+
+        global_stats_message = {
+            'type': 'stats',
+            'protocol_counts': global_protocol_counts,
+            'timestamp': datetime.now().isoformat()
+        }
+
+        # Send global stats to each client (with encryption support)
+        for addr, client_data in all_connected_clients.items():
+            client_info = client_data['client_info']
+            socket_conn = client_info.get('socket')
+
+            if socket_conn:
+                try:
+                    # Check if this is an encrypted client
+                    if self.enable_encryption and addr in self.encrypted_clients and addr in self.client_message_handlers:
+                        # Send encrypted
+                        message_handler = self.client_message_handlers[addr]
+                        encrypted_msg = message_handler.prepare_message(global_stats_message)
+                        socket_conn.sendall(encrypted_msg.encode('utf-8'))
+                    else:
+                        # Send unencrypted
+                        socket_conn.sendall((json.dumps(global_stats_message) + '\n').encode('utf-8'))
+                except Exception as e:
+                    print(f"[SERVER] Error sending global stats to {client_data['username']}: {e}")
+                    with self.clients_lock:
+                        if client_data['username'] in self.clients_by_username:
+                            self.clients_by_username[client_data['username']]['connected'] = False
+
+        # Now send environment-specific stats (FIXED: Personal vs Environment with encryption)
+        for addr, client_data in all_connected_clients.items():
+            try:
+                client_info = client_data['client_info']
+                username = client_data['username']
+                socket_conn = client_info.get('socket')
+
+                if not socket_conn:
+                    continue
+
+                # FIXED: Determine if this user is an admin
+                is_admin_user = username in self.admin_clients
+                client_environments = client_info.get('environments', [])
+
+                # Debug logging
+                print(
+                    f"[ENCRYPTED_SERVER] Sending stats to {username}: admin={is_admin_user}, environments={client_environments}")
+
+                # Send stats for each environment the client is connected to
+                for env_name in client_environments:
+                    if is_admin_user:
+                        # ADMIN USERS: Get environment-wide protocol counts
+                        with self.environment_lock:
+                            if env_name in self.environments:
+                                protocol_counts_to_send = self.environments[env_name]['protocol_counts'].copy()
+                                stats_type = 'environment'
+                                print(
+                                    f"[ENCRYPTED_SERVER] Sending ENVIRONMENT stats to admin {username} for {env_name}: {protocol_counts_to_send}")
+                            else:
+                                continue
+                    else:
+                        # REGULAR USERS: Get personal protocol counts
+                        protocol_counts_to_send = client_info.get('protocol_counts', {
+                            'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
+                        }).copy()
+                        stats_type = 'personal'
+                        print(
+                            f"[ENCRYPTED_SERVER] Sending PERSONAL stats to user {username} for {env_name}: {protocol_counts_to_send}")
+
+                    # Create the stats message
+                    env_stats_message = {
+                        'type': 'stats',
+                        'environment': env_name,
+                        'protocol_counts': protocol_counts_to_send,
+                        'timestamp': datetime.now().isoformat(),
+                        'stats_type': stats_type,
+                        'username': username  # Add username for debugging
+                    }
+
+                    try:
+                        # Send with encryption support
+                        if self.enable_encryption and addr in self.encrypted_clients and addr in self.client_message_handlers:
+                            # Send encrypted
+                            message_handler = self.client_message_handlers[addr]
+                            encrypted_msg = message_handler.prepare_message(env_stats_message)
+                            socket_conn.sendall(encrypted_msg.encode('utf-8'))
+                            print(f"[ENCRYPTED_SERVER] Successfully sent ENCRYPTED {stats_type} stats to {username}")
+                        else:
+                            # Send unencrypted
+                            socket_conn.sendall((json.dumps(env_stats_message) + '\n').encode('utf-8'))
+                            print(f"[ENCRYPTED_SERVER] Successfully sent UNENCRYPTED {stats_type} stats to {username}")
+                    except Exception as e:
+                        print(f"[ENCRYPTED_SERVER] Error sending {env_name} stats to {username}: {e}")
+
+            except Exception as e:
+                print(f"[ENCRYPTED_SERVER] Error preparing stats for {client_data['username']}: {e}")
 
     def handle_client(self, conn, addr):
         """Handle client connection with support for both encrypted and unencrypted clients"""
@@ -128,7 +257,7 @@ class EncryptedPacketServer(PacketServer):
                     if auth_json.get('is_admin'):
                         is_admin = True
                         self.admin_clients.add(username)
-                        print(f"[SERVER] Admin user {username} connected")
+                        print(f"[SERVER] Added {username} to admin_clients set: {self.admin_clients}")
 
                     # Handle environments
                     environments = auth_json.get('environments', [])
@@ -142,9 +271,6 @@ class EncryptedPacketServer(PacketServer):
 
                     verified_environments = [env.get('env_name') for env in environments if env.get('env_name')]
                     authenticated = True
-
-                    # Register client and send response (same as original logic)
-                    # ... [rest of unencrypted auth logic] ...
 
                 elif first_msg.get('type') == 'client_hello' and first_msg.get('supports_encryption'):
                     print(f"[SERVER] Detected encryption-capable client from {addr}")
@@ -229,6 +355,8 @@ class EncryptedPacketServer(PacketServer):
                                     if auth_json.get('is_admin'):
                                         is_admin = True
                                         self.admin_clients.add(username)
+                                        print(
+                                            f"[SERVER] Added encrypted client {username} to admin_clients set: {self.admin_clients}")
 
                                     # Handle environments
                                     environments = auth_json.get('environments', [])
@@ -430,6 +558,7 @@ class EncryptedPacketServer(PacketServer):
 
             if username and username in self.admin_clients:
                 self.admin_clients.remove(username)
+                print(f"[SERVER] Removed {username} from admin_clients set: {self.admin_clients}")
 
             if not is_admin_dashboard:
                 with self.environment_lock:
@@ -448,147 +577,6 @@ class EncryptedPacketServer(PacketServer):
 
             dashboard_text = " (admin dashboard)" if is_admin_dashboard else ""
             print(f"[SERVER] Connection with {username or addr}{dashboard_text} closed")
-
-    def _send_stats_periodically(self):
-        """Override to handle encrypted clients properly with personal vs environment protocol counts"""
-        # Use the parent class implementation but check for encryption
-        while self.running:
-            time.sleep(30)
-
-            # Clear old packet IDs
-            current_time = time.time()
-            if current_time - self.last_packet_id_cleanup > 3600:
-                with self.processed_packets_lock:
-                    if len(self.processed_packet_ids) > 10000:
-                        print(f"[SERVER] Clearing packet ID cache. Size before: {len(self.processed_packet_ids)}")
-                        self.processed_packet_ids = set(list(self.processed_packet_ids)[-5000:])
-                        print(f"[SERVER] New packet ID cache size: {len(self.processed_packet_ids)}")
-                self.last_packet_id_cleanup = current_time
-
-            # Get connected clients
-            connected_clients = {}
-            with self.clients_lock:
-                for addr, username in self.active_connections.items():
-                    if addr in self.admin_dashboard_connections:
-                        continue
-                    if username in self.clients_by_username and self.clients_by_username[username].get('connected',
-                                                                                                       False):
-                        connected_clients[addr] = self.clients_by_username[username]
-
-            # Also get admin dashboard clients
-            admin_dashboard_clients = {}
-            with self.clients_lock:
-                for addr, username in self.admin_dashboard_connections.items():
-                    if username in self.clients_by_username and self.clients_by_username[username].get('connected',
-                                                                                                       False):
-                        admin_dashboard_clients[addr] = self.clients_by_username[username]
-
-            all_clients_for_stats = {**connected_clients, **admin_dashboard_clients}
-
-            if not all_clients_for_stats:
-                continue
-
-            # Send stats to each client
-            for addr, client_info in all_clients_for_stats.items():
-                try:
-                    with self.protocol_lock:
-                        global_protocol_counts = self.protocol_counts.copy()
-
-                    global_stats_message = {
-                        'type': 'stats',
-                        'protocol_counts': global_protocol_counts,
-                        'timestamp': datetime.now().isoformat()
-                    }
-
-                    socket_conn = client_info.get('socket')
-                    if socket_conn:
-                        try:
-                            # Check if this is an encrypted client
-                            if self.enable_encryption and addr in self.encrypted_clients and addr in self.client_message_handlers:
-                                # Send encrypted
-                                message_handler = self.client_message_handlers[addr]
-                                encrypted_msg = message_handler.prepare_message(global_stats_message)
-                                socket_conn.sendall(encrypted_msg.encode('utf-8'))
-                            else:
-                                # Send unencrypted
-                                socket_conn.sendall((json.dumps(global_stats_message) + '\n').encode('utf-8'))
-                        except Exception as e:
-                            print(f"[SERVER] Error sending global stats to {client_info['username']}: {e}")
-                            with self.clients_lock:
-                                if client_info['username'] in self.clients_by_username:
-                                    self.clients_by_username[client_info['username']]['connected'] = False
-
-                    # MODIFIED: Send different stats based on admin status
-                    username = client_info['username']
-                    is_admin = username in self.admin_clients
-                    client_environments = client_info.get('environments', [])
-
-                    for env_name in client_environments:
-                        if is_admin:
-                            # Admin clients get environment-wide protocol counts
-                            with self.environment_lock:
-                                if env_name in self.environments:
-                                    env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
-                                else:
-                                    continue
-
-                            env_stats_message = {
-                                'type': 'stats',
-                                'environment': env_name,
-                                'protocol_counts': env_protocol_counts,
-                                'timestamp': datetime.now().isoformat(),
-                                'stats_type': 'environment'  # Indicate this is environment-wide data
-                            }
-                        else:
-                            # Non-admin clients get their personal protocol counts
-                            personal_protocol_counts = client_info.get('protocol_counts', {
-                                'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
-                            }).copy()
-
-                            env_stats_message = {
-                                'type': 'stats',
-                                'environment': env_name,
-                                'protocol_counts': personal_protocol_counts,
-                                'timestamp': datetime.now().isoformat(),
-                                'stats_type': 'personal'  # Indicate this is personal data
-                            }
-
-                        if socket_conn:
-                            try:
-                                # Check if encrypted
-                                if self.enable_encryption and addr in self.encrypted_clients and addr in self.client_message_handlers:
-                                    message_handler = self.client_message_handlers[addr]
-                                    encrypted_msg = message_handler.prepare_message(env_stats_message)
-                                    socket_conn.sendall(encrypted_msg.encode('utf-8'))
-                                else:
-                                    socket_conn.sendall((json.dumps(env_stats_message) + '\n').encode('utf-8'))
-                            except Exception as e:
-                                print(f"[SERVER] Error sending {env_name} stats to {client_info['username']}: {e}")
-
-                except Exception as e:
-                    print(f"[SERVER] Error preparing stats for {client_info['username']}: {e}")
-
-            # Send admin stats
-            if int(time.time()) % 2 == 0:
-                for username in list(self.admin_clients):
-                    try:
-                        client_addr = None
-                        with self.clients_lock:
-                            for addr, uname in self.active_connections.items():
-                                if uname == username:
-                                    client_addr = addr
-                                    break
-                            if not client_addr:
-                                for addr, uname in self.admin_dashboard_connections.items():
-                                    if uname == username:
-                                        client_addr = addr
-                                        break
-
-                        if client_addr:
-                            request_data = {'type': 'admin_stats_request'}
-                            self.handle_admin_request(request_data, client_addr)
-                    except Exception as e:
-                        print(f"[SERVER] Error sending admin stats to {username}: {e}")
 
 
 if __name__ == "__main__":
