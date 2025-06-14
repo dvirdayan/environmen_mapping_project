@@ -134,6 +134,9 @@ class PacketServer:
         if not all_connected_clients:
             return
 
+        # REMOVED: No more global stats broadcast to all clients
+        # Each client will only get their appropriate stats
+
         # Send stats to each client based on their role
         for addr, client_data in all_connected_clients.items():
             try:
@@ -145,33 +148,68 @@ class PacketServer:
                     print(f"[SERVER] No socket connection for {username}, skipping stats")
                     continue
 
-                # FIXED: Determine user role correctly - check BOTH conditions
-                is_admin_user = (
-                        username in self.admin_clients and
-                        client_data['is_admin_dashboard']  # Only admin dashboard connections get environment stats
-                        )
+                # Determine if this is an admin dashboard connection
+                is_admin_dashboard = client_data['is_admin_dashboard'] and username in self.admin_clients
                 client_environments = client_info.get('environments', [])
 
                 print(
-                    f"[SERVER] Preparing stats for {username}: admin={is_admin_user}, is_dashboard={client_data['is_admin_dashboard']}, environments={client_environments}")
+                    f"[SERVER] Preparing stats for {username}: is_admin_dashboard={is_admin_dashboard}, environments={client_environments}")
 
                 # Ensure personal stats are initialized
                 if 'protocol_counts' not in client_info:
                     client_info['protocol_counts'] = {
                         'TCP': 0, 'UDP': 0, 'HTTP': 0, 'HTTPS': 0, 'FTP': 0, 'SMTP': 0, 'Other': 0
                     }
-                    print(f"[SERVER] EMERGENCY: Initialized missing personal stats for {username}")
+                    print(f"[SERVER] Initialized missing personal stats for {username}")
 
-                # Get personal protocol distribution for this user
-                personal_distribution = self.get_personal_protocol_distribution(username)
+                # Get personal stats for this user
+                personal_counts = client_info.get('protocol_counts', {}).copy()
 
-                if not personal_distribution:
-                    print(f"[SERVER] ERROR: Could not get personal distribution for {username}")
-                    continue
+                if not is_admin_dashboard:
+                    # REGULAR USERS: Send ONLY their personal stats in the expected format
+                    # Using 'protocol_counts' field for backward compatibility with client
+                    stats_message = {
+                        'type': 'stats',
+                        'protocol_counts': personal_counts,  # Client expects this field
+                        'timestamp': datetime.now().isoformat(),
+                        'stats_type': 'personal',
+                        'username': username
+                    }
 
-                # FIXED LOGIC: Only send environment stats to admin dashboard users
-                if is_admin_user:
-                    # ADMIN DASHBOARD USERS: Send environment stats AND personal stats
+                    print(f"[SERVER] Sending PERSONAL stats to regular user {username}: {personal_counts}")
+
+                    # Send the message
+                    try:
+                        # Handle encryption if this is EncryptedPacketServer
+                        if hasattr(self, 'encrypted_clients') and hasattr(self, 'client_message_handlers'):
+                            if addr in self.encrypted_clients and addr in self.client_message_handlers:
+                                # Send encrypted
+                                message_handler = self.client_message_handlers[addr]
+                                encrypted_msg = message_handler.prepare_message(stats_message)
+                                socket_conn.sendall(encrypted_msg.encode('utf-8'))
+                            else:
+                                # Send unencrypted
+                                message_json = json.dumps(stats_message)
+                                message_bytes = (message_json + '\n').encode('utf-8')
+                                socket_conn.sendall(message_bytes)
+                        else:
+                            # Regular unencrypted server
+                            message_json = json.dumps(stats_message)
+                            message_bytes = (message_json + '\n').encode('utf-8')
+                            socket_conn.sendall(message_bytes)
+
+                        print(f"[SERVER] ✓ Successfully sent personal stats to {username}")
+                    except socket.error as e:
+                        print(f"[SERVER] Socket error sending stats to {username}: {e}")
+                        with self.clients_lock:
+                            if username in self.clients_by_username:
+                                self.clients_by_username[username]['connected'] = False
+                    except Exception as e:
+                        print(f"[SERVER] Error sending personal stats to {username}: {e}")
+
+                else:
+                    # ADMIN DASHBOARD USERS: Send environment-wide stats
+                    # For each environment they're connected to
                     for env_name in client_environments:
                         if not env_name:
                             continue
@@ -179,35 +217,22 @@ class PacketServer:
                         with self.environment_lock:
                             if env_name in self.environments:
                                 env_protocol_counts = self.environments[env_name]['protocol_counts'].copy()
-                                env_total = sum(env_protocol_counts.values())
 
-                                # Calculate environment distribution
-                                env_distribution = {}
-                                if env_total > 0:
-                                    for protocol, count in env_protocol_counts.items():
-                                        env_distribution[protocol] = round((count / env_total) * 100, 2)
-                                else:
-                                    env_distribution = {protocol: 0.0 for protocol in env_protocol_counts.keys()}
-
-                                # Prepare admin stats message with BOTH environment and personal data
+                                # Send environment stats for admin dashboard
                                 stats_message = {
                                     'type': 'stats',
                                     'environment': env_name,
-                                    'protocol_data': {
-                                        'environment_counts': env_protocol_counts,
-                                        'environment_distribution': env_distribution,
-                                        'environment_total': env_total,
-                                        'personal_counts': personal_distribution['counts'],
-                                        'personal_distribution': personal_distribution['distribution'],
-                                        'personal_total': personal_distribution['total_packets']
-                                    },
+                                    'protocol_counts': env_protocol_counts,  # Environment-wide counts
                                     'timestamp': datetime.now().isoformat(),
-                                    'stats_type': 'admin_with_personal',
+                                    'stats_type': 'environment',
                                     'username': username,
-                                    'is_personal': False  # False for admin dashboard users
+                                    'personal_counts': personal_counts  # Also include personal stats for reference
                                 }
 
-                                # Send the admin message
+                                print(
+                                    f"[SERVER] Sending ENVIRONMENT stats to admin dashboard {username} for {env_name}: {env_protocol_counts}")
+
+                                # Send the message
                                 try:
                                     # Handle encryption if this is EncryptedPacketServer
                                     if hasattr(self, 'encrypted_clients') and hasattr(self, 'client_message_handlers'):
@@ -228,76 +253,17 @@ class PacketServer:
                                         socket_conn.sendall(message_bytes)
 
                                     print(
-                                        f"[SERVER] ✓ Successfully sent admin+personal stats to {username} for {env_name}")
+                                        f"[SERVER] ✓ Successfully sent environment stats to admin dashboard {username}")
                                 except socket.error as e:
                                     print(f"[SERVER] Socket error sending stats to {username}: {e}")
                                     with self.clients_lock:
                                         if username in self.clients_by_username:
                                             self.clients_by_username[username]['connected'] = False
-                                    break  # Exit environment loop for this client
+                                    break
                                 except Exception as e:
-                                    print(f"[SERVER] Error sending admin stats to {username}: {e}")
+                                    print(f"[SERVER] Error sending environment stats to {username}: {e}")
                             else:
-                                print(f"[SERVER] Environment {env_name} not found for admin {username}")
-
-                else:
-                    # REGULAR USERS (including admin users that are NOT using dashboard): Send ONLY personal stats
-                    stats_message = {
-                        'type': 'stats',
-                        'environment': client_environments[0] if client_environments else 'default',
-                        'environments': client_environments,
-                        'protocol_data': {
-                            # ONLY personal data for regular users - NO environment data
-                            'personal_counts': personal_distribution['counts'],
-                            'personal_distribution': personal_distribution['distribution'],
-                            'personal_total': personal_distribution['total_packets']
-                            # Explicitly NOT including:
-                            # - environment_counts
-                            # - environment_distribution
-                            # - environment_total
-                        },
-                        'timestamp': datetime.now().isoformat(),
-                        'stats_type': 'personal_only',
-                        'username': username,
-                        'is_personal': True  # Always true for regular users
-                    }
-
-                    print(f"[SERVER] SENDING PERSONAL-ONLY STATS to regular user {username}:")
-                    print(f"  - Personal counts: {personal_distribution['counts']}")
-                    print(f"  - Personal distribution: {personal_distribution['distribution']}")
-                    print(f"  - Total packets: {personal_distribution['total_packets']}")
-
-                    # Send the personal-only message
-                    try:
-                        # Handle encryption if this is EncryptedPacketServer
-                        if hasattr(self, 'encrypted_clients') and hasattr(self, 'client_message_handlers'):
-                            if addr in self.encrypted_clients and addr in self.client_message_handlers:
-                                # Send encrypted
-                                message_handler = self.client_message_handlers[addr]
-                                encrypted_msg = message_handler.prepare_message(stats_message)
-                                socket_conn.sendall(encrypted_msg.encode('utf-8'))
-                            else:
-                                # Send unencrypted
-                                message_json = json.dumps(stats_message)
-                                message_bytes = (message_json + '\n').encode('utf-8')
-                                socket_conn.sendall(message_bytes)
-                        else:
-                            # Regular unencrypted server
-                            message_json = json.dumps(stats_message)
-                            message_bytes = (message_json + '\n').encode('utf-8')
-                            socket_conn.sendall(message_bytes)
-
-                        print(f"[SERVER] ✓ Successfully sent PERSONAL-ONLY stats to regular user {username}")
-                    except socket.error as e:
-                        print(f"[SERVER] Socket error sending stats to {username}: {e}")
-                        with self.clients_lock:
-                            if username in self.clients_by_username:
-                                self.clients_by_username[username]['connected'] = False
-                        continue
-                    except Exception as e:
-                        print(f"[SERVER] Error sending personal stats to {username}: {e}")
-                        import traceback
-                        traceback.print_exc()
+                                print(f"[SERVER] Environment {env_name} not found for admin dashboard {username}")
 
             except Exception as e:
                 print(f"[SERVER] Error preparing stats for {client_data['username']}: {e}")
@@ -413,6 +379,7 @@ class PacketServer:
                 username = self.admin_dashboard_connections.get(client_addr)
 
         if not username or username not in self.admin_clients:
+            print(f"[SERVER] Admin request from non-admin user or unknown client: {username}")
             return  # Not an admin
 
         # Prepare admin data
@@ -425,11 +392,22 @@ class PacketServer:
             }
         }
 
-        # Gather client data (excluding admin dashboard connections)
+        # Gather client data
         with self.clients_lock:
+            # Debug logging
+            print(f"[SERVER] Preparing admin stats:")
+            print(f"  - Total active_connections: {len(self.active_connections)}")
+            print(f"  - Total admin_dashboard_connections: {len(self.admin_dashboard_connections)}")
+            print(f"  - Total clients_by_username: {len(self.clients_by_username)}")
+
+            # Include ALL connected clients (both regular and those in clients_by_username)
+            processed_usernames = set()
+
+            # First, add all clients from active_connections (excluding dashboards)
             for addr, uname in self.active_connections.items():
                 # Skip admin dashboard connections
                 if addr in self.admin_dashboard_connections:
+                    print(f"[SERVER] Skipping admin dashboard connection: {uname} at {addr}")
                     continue
 
                 if uname in self.clients_by_username:
@@ -441,6 +419,38 @@ class PacketServer:
                     # Remove socket object
                     client_info.pop('socket', None)
                     admin_data['data']['clients'][f"{addr[0]}:{addr[1]}"] = client_info
+                    processed_usernames.add(uname)
+                    print(f"[SERVER] Added active client to admin stats: {uname} at {addr[0]}:{addr[1]}")
+
+            # Also check all clients in clients_by_username that might be connected but not in active_connections
+            for uname, client_info in self.clients_by_username.items():
+                # Skip if already processed or if it's an admin dashboard client
+                if uname in processed_usernames or uname in self.admin_dashboard_clients:
+                    continue
+
+                # Check if client is connected
+                if client_info.get('connected', False):
+                    # This client is connected but might not be in active_connections
+                    client_data = client_info.copy()
+
+                    # Get last known address
+                    last_addr = client_info.get('last_addr')
+                    if last_addr:
+                        client_data['ip'] = last_addr[0]
+                        client_data['port'] = last_addr[1]
+                    else:
+                        client_data['ip'] = 'unknown'
+                        client_data['port'] = 0
+
+                    client_data['connect_time'] = self.client_connect_times.get(uname, 0)
+                    # Remove socket object
+                    client_data.pop('socket', None)
+
+                    # Use username as key if no address available
+                    key = f"{client_data['ip']}:{client_data['port']}" if client_data[
+                                                                              'ip'] != 'unknown' else f"user_{uname}"
+                    admin_data['data']['clients'][key] = client_data
+                    print(f"[SERVER] Added connected client to admin stats: {uname} at {key}")
 
         # Add global protocol counts
         with self.protocol_lock:
@@ -449,11 +459,21 @@ class PacketServer:
         # Add environment data
         with self.environment_lock:
             for env_name, env_data in self.environments.items():
+                # Get connected clients in this environment (excluding dashboards)
+                connected_clients = []
+                for client_name, client_data in env_data['clients'].items():
+                    if client_data.get('connected', False) and client_name not in self.admin_dashboard_clients:
+                        connected_clients.append(client_name)
+
                 admin_data['data']['environments'][env_name] = {
-                    'clients': list(env_data['clients'].keys()),
+                    'clients': connected_clients,
                     'protocol_counts': env_data['protocol_counts'].copy(),
                     'packet_count': env_data['packet_count']
                 }
+
+        # Log summary
+        total_clients = len(admin_data['data']['clients'])
+        print(f"[SERVER] Sending admin stats to {username}: {total_clients} clients found")
 
         # Send to requesting admin
         try:
@@ -467,8 +487,12 @@ class PacketServer:
                 # Only log for non-dashboard connections to reduce spam
                 if client_addr not in self.admin_dashboard_connections:
                     print(f"[SERVER] Sent admin stats to {username}")
+            else:
+                print(f"[SERVER] No socket found for admin user {username}")
         except Exception as e:
             print(f"[SERVER] Error sending admin stats: {e}")
+            import traceback
+            traceback.print_exc()
 
     def process_packet(self, packet_data, client_addr, environments=None):
         """
